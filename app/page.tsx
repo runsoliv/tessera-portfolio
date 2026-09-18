@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Activity,
   ArrowDownRight,
@@ -43,6 +43,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { ChartContainer } from '@/components/ui/chart';
 import {
+  resolveCurrentUtcPnl,
+  usePortfolioSparklines,
+} from '@/hooks/use-portfolio-sparklines';
+import {
   filterSnapshots,
   formatCompactMoneyAxis,
   formatHistoryTick,
@@ -54,24 +58,13 @@ import {
   buildPortfolioHistory,
   currentUtcDayPnl,
   historySourceLabels,
+  replaceCurrentUtcDayPnl,
 } from '@/lib/venue-history';
-
-const DAILY_PNL_STABLECOINS = new Set([
-  'USDC',
-  'USDT',
-  'DAI',
-  'USDE',
-  'USDS',
-  'PYUSD',
-  'FDUSD',
-  'TUSD',
-]);
 
 export default function OverviewPage() {
   const [historyMetric, setHistoryMetric] = useState<'equity' | 'pnl'>(
     'equity',
   );
-  const [utcDayKey, setUtcDayKey] = useState(() => utcCalendarDay(Date.now()));
   const {
     portfolio,
     analytics,
@@ -117,10 +110,6 @@ export default function OverviewPage() {
     () => buildDailyPortfolioPnlHistory(combinedPnlHistory),
     [combinedPnlHistory],
   );
-  const dailyPnlHistory = useMemo(
-    () => filterSnapshots(combinedDailyPnlHistory, range, customRange),
-    [combinedDailyPnlHistory, customRange, range],
-  );
   const historySources = useMemo(
     () => historySourceLabels(portfolio.venueHistories ?? []),
     [portfolio.venueHistories],
@@ -138,145 +127,21 @@ export default function OverviewPage() {
     () => analytics.assetData.slice(0, 5),
     [analytics.assetData],
   );
-  const sparklineAssetData = useMemo(() => {
-    const assets = new Map<string, (typeof analytics.assetData)[number]>();
-    for (const asset of largestAssets) assets.set(asset.key, asset);
-    for (const asset of analytics.assetData) {
-      if (asset.instrumentType === 'crypto') assets.set(asset.key, asset);
-      if (assets.size >= 40) break;
-    }
-    return Array.from(assets.values()).slice(0, 40);
-  }, [analytics.assetData, largestAssets]);
-  const sparklineAssets = useMemo(
-    () =>
-      sparklineAssetData.map((asset) => {
-        const matchingHoldings = analytics.holdings.filter(
-          (holding) =>
-            holding.symbol.toUpperCase() === asset.symbol &&
-            (holding.instrumentType === 'stock' ? 'stock' : 'crypto') ===
-              asset.instrumentType,
-        );
-        const identified = matchingHoldings.find((holding) => holding.coinId);
-        const marketLinked = matchingHoldings.find(
-          (holding) => holding.marketRef,
-        );
-        const priced = matchingHoldings.find(
-          (holding) => Number(holding.price ?? holding.manualPrice) > 0,
-        );
-        return {
-          key: asset.key,
-          symbol: asset.symbol,
-          instrumentType: asset.instrumentType,
-          coinId: identified?.coinId,
-          marketRef: marketLinked?.marketRef,
-          currentPrice: priced?.price ?? priced?.manualPrice,
-          color: asset.color,
-        };
-      }),
-    [analytics.holdings, sparklineAssetData],
-  );
-  const sparklineRequestKey = JSON.stringify(sparklineAssets);
-  const [sparklines, setSparklines] = useState<Record<string, SparklineSeries>>(
-    {},
-  );
-  useEffect(() => {
-    const timer = window.setInterval(
-      () => setUtcDayKey(utcCalendarDay(Date.now())),
-      60_000,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
-  useEffect(() => {
-    const requestedAssets = JSON.parse(
-      sparklineRequestKey,
-    ) as typeof sparklineAssets;
-    if (!requestedAssets.length) return;
-    const controller = new AbortController();
-    void fetch('/api/market/sparklines', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assets: requestedAssets }),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Sparkline history failed');
-        return (await response.json()) as {
-          sparklines?: Record<string, SparklineSeries>;
-        };
-      })
-      .then((result) => setSparklines(result.sparklines ?? {}))
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError'))
-          setSparklines({});
-      });
-    return () => controller.abort();
-  }, [sparklineRequestKey, utcDayKey]);
-  const dailyCoinPnl = useMemo(() => {
-    const rows = sparklineAssets.flatMap((asset) => {
-      if (
-        asset.instrumentType !== 'crypto' ||
-        DAILY_PNL_STABLECOINS.has(asset.symbol.toUpperCase())
-      )
-        return [];
-      const series = sparklines[asset.key];
-      const dayOpen = Number(series?.utcDayOpen);
-      const canonicalPrice = Number(series?.points.at(-1));
-      if (!(dayOpen > 0) || !(canonicalPrice > 0)) return [];
-      const matching = analytics.holdings.filter(
-        (holding) =>
-          holding.instrumentType !== 'stock' &&
-          holding.symbol.toUpperCase() === asset.symbol.toUpperCase(),
-      );
-      const pnl = matching.reduce((sum, holding) => {
-        const direction =
-          holding.positionKind === 'perp' && holding.side === 'short' ? -1 : 1;
-        return sum + direction * holding.amount * (canonicalPrice - dayOpen);
-      }, 0);
-      const latestPrice = canonicalPrice;
-      return [
-        {
-          key: asset.key,
-          symbol: asset.symbol,
-          pnl,
-          positive: Math.max(0, pnl),
-          negative: Math.min(0, pnl),
-          dayOpen,
-          latestPrice,
-          changePercent:
-            latestPrice > 0
-              ? (latestPrice / dayOpen - 1) * 100
-              : series.utcDayChangePercent,
-          positionCount: matching.length,
-          color: asset.color,
-        },
-      ];
-    });
-    const visible = [...rows]
-      .sort((left, right) => Math.abs(right.pnl) - Math.abs(left.pnl))
-      .slice(0, 10)
-      .sort((left, right) => right.pnl - left.pnl);
-    return {
-      rows: visible,
-      total: rows.reduce((sum, row) => sum + row.pnl, 0),
-      coverage: rows.length,
-      requested: sparklineAssets.filter(
-        (asset) =>
-          asset.instrumentType === 'crypto' &&
-          !DAILY_PNL_STABLECOINS.has(asset.symbol.toUpperCase()),
-      ).length,
-    };
-  }, [analytics.holdings, sparklines, sparklineAssets]);
+  const { dailyCoinPnl, sparklines } = usePortfolioSparklines(analytics);
   const venueTodayPnl = currentUtcDayPnl(combinedDailyPnlHistory);
-  const maxPlausibleDailyPnl = Math.max(10_000, analytics.totalValue * 3);
-  const safeVenueTodayPnl =
-    Math.abs(venueTodayPnl) <= maxPlausibleDailyPnl ? venueTodayPnl : 0;
-  const hasCompleteCoinCoverage =
-    dailyCoinPnl.coverage > 0 &&
-    dailyCoinPnl.coverage === dailyCoinPnl.requested &&
-    Math.abs(dailyCoinPnl.total) <= maxPlausibleDailyPnl;
-  const todayPnl = hasCompleteCoinCoverage
-    ? dailyCoinPnl.total
-    : safeVenueTodayPnl;
+  const todayPnl = resolveCurrentUtcPnl({
+    dailyCoinPnl,
+    venueTodayPnl,
+    portfolioValue: analytics.totalValue,
+  });
+  const reconciledDailyPnlHistory = useMemo(
+    () => replaceCurrentUtcDayPnl(combinedDailyPnlHistory, todayPnl),
+    [combinedDailyPnlHistory, todayPnl],
+  );
+  const dailyPnlHistory = useMemo(
+    () => filterSnapshots(reconciledDailyPnlHistory, range, customRange),
+    [customRange, range, reconciledDailyPnlHistory],
+  );
   const openingEquity = analytics.totalValue - todayPnl;
   const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =
@@ -1209,11 +1074,6 @@ function formatMarketPrice(value: number) {
     minimumFractionDigits: value < 1 ? Math.min(4, digits) : 2,
     maximumFractionDigits: digits,
   }).format(value);
-}
-
-function utcCalendarDay(timestamp: number) {
-  const date = new Date(timestamp);
-  return `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
 }
 
 function HeroMetric({

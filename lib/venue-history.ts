@@ -266,6 +266,37 @@ export function currentUtcDayPnl(
     : 0;
 }
 
+export function replaceCurrentUtcDayPnl(
+  dailyHistory: DailyPortfolioPnlPoint[],
+  value: number,
+  now = Date.now(),
+) {
+  if (!Number.isFinite(value)) return dailyHistory;
+  const currentKey = utcDayKey(now);
+  const existing = dailyHistory.find(
+    (point) => utcDayKey(point.timestamp) === currentKey,
+  );
+  const replacement: DailyPortfolioPnlPoint = {
+    timestamp: now,
+    value,
+    positive: Math.max(0, value),
+    negative: Math.min(0, value),
+    origin: existing?.origin ?? 'local',
+    sources: ['Live UTC pricing'],
+  };
+  return [
+    ...dailyHistory.filter(
+      (point) => utcDayKey(point.timestamp) !== currentKey,
+    ),
+    replacement,
+  ].sort((left, right) => left.timestamp - right.timestamp);
+}
+
+function utcDayKey(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+}
+
 function buildVenuePnlHistory(
   venueHistories: VenueHistorySeries[],
 ): PortfolioHistoryPoint[] {

@@ -15,10 +15,16 @@ import {
 import { usePortfolio } from '@/components/portfolio-provider';
 import { MetricCard, PageIntro, Panel } from '@/components/page-primitives';
 import { Button } from '@/components/ui/button';
+import {
+  resolveCurrentUtcPnl,
+  usePortfolioSparklines,
+} from '@/hooks/use-portfolio-sparklines';
 import { formatMoney } from '@/lib/portfolio';
 import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioPnlHistory,
+  currentUtcDayPnl,
+  replaceCurrentUtcDayPnl,
   type DailyPortfolioPnlPoint,
 } from '@/lib/venue-history';
 
@@ -46,6 +52,7 @@ export default function PnlCalendarPage() {
   const currentMonth = startOfUtcMonth(today);
   const [monthCursor, setMonthCursor] = useState(currentMonth);
   const privacy = portfolio.privacyMode;
+  const { dailyCoinPnl } = usePortfolioSparklines(analytics);
 
   const dailyHistory = useMemo(() => {
     const cumulative = buildPortfolioPnlHistory(
@@ -53,8 +60,20 @@ export default function PnlCalendarPage() {
       portfolio.venueHistories ?? [],
       analytics.totalValue,
     );
-    return buildDailyPortfolioPnlHistory(cumulative);
-  }, [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories]);
+    const venueDaily = buildDailyPortfolioPnlHistory(cumulative);
+    const todayPnl = resolveCurrentUtcPnl({
+      dailyCoinPnl,
+      venueTodayPnl: currentUtcDayPnl(venueDaily, today),
+      portfolioValue: analytics.totalValue,
+    });
+    return replaceCurrentUtcDayPnl(venueDaily, todayPnl, today);
+  }, [
+    analytics.totalValue,
+    dailyCoinPnl,
+    portfolio.snapshots,
+    portfolio.venueHistories,
+    today,
+  ]);
 
   const calendar = useMemo(
     () => buildCalendarMonth(monthCursor, dailyHistory, today),

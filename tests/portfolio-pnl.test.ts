@@ -11,6 +11,7 @@ import {
   buildPortfolioHistory,
   buildPortfolioPnlHistory,
   currentUtcDayPnl,
+  replaceCurrentUtcDayPnl,
   type PortfolioHistoryPoint,
 } from '../lib/venue-history.ts';
 
@@ -310,4 +311,35 @@ void test('headline P&L resets at the 00:00 UTC daily-candle boundary', () => {
 
   assert.equal(currentUtcDayPnl([point], today), 0);
   assert.equal(currentUtcDayPnl([{ ...point, timestamp: today }], today), 250);
+});
+
+void test('live UTC P&L replaces only the current calendar day', () => {
+  const yesterday = Date.UTC(2026, 8, 17, 20);
+  const today = Date.UTC(2026, 8, 18, 20);
+  const history = [
+    {
+      timestamp: yesterday,
+      value: 125,
+      positive: 125,
+      negative: 0,
+      origin: 'venue' as const,
+      sources: ['Hyperliquid'],
+    },
+    {
+      timestamp: today - 60_000,
+      value: 1_355.11,
+      positive: 1_355.11,
+      negative: 0,
+      origin: 'venue' as const,
+      sources: ['Hyperliquid'],
+    },
+  ];
+
+  const reconciled = replaceCurrentUtcDayPnl(history, 1_951.74, today);
+
+  assert.equal(reconciled.length, 2);
+  assert.equal(reconciled[0]?.value, 125);
+  assert.equal(reconciled[1]?.value, 1_951.74);
+  assert.equal(reconciled[1]?.positive, 1_951.74);
+  assert.deepEqual(reconciled[1]?.sources, ['Live UTC pricing']);
 });
