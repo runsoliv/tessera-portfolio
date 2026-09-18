@@ -267,7 +267,16 @@ export default function OverviewPage() {
     };
   }, [analytics.holdings, sparklines, sparklineAssets]);
   const venueTodayPnl = currentUtcDayPnl(combinedDailyPnlHistory);
-  const todayPnl = venueTodayPnl;
+  const maxPlausibleDailyPnl = Math.max(10_000, analytics.totalValue * 3);
+  const safeVenueTodayPnl =
+    Math.abs(venueTodayPnl) <= maxPlausibleDailyPnl ? venueTodayPnl : 0;
+  const hasCompleteCoinCoverage =
+    dailyCoinPnl.coverage > 0 &&
+    dailyCoinPnl.coverage === dailyCoinPnl.requested &&
+    Math.abs(dailyCoinPnl.total) <= maxPlausibleDailyPnl;
+  const todayPnl = hasCompleteCoinCoverage
+    ? dailyCoinPnl.total
+    : safeVenueTodayPnl;
   const openingEquity = analytics.totalValue - todayPnl;
   const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =

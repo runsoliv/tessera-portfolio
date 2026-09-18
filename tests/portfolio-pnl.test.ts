@@ -178,6 +178,84 @@ void test('venue backfill preserves every local whole-portfolio snapshot', () =>
   );
 });
 
+void test('removes a corrupt high-value plateau without changing current equity', () => {
+  const now = Date.now();
+  const history = buildPortfolioHistory(
+    [
+      { timestamp: now - 4_000, value: 18_500 },
+      { timestamp: now - 3_000, value: 19_000 },
+      { timestamp: now - 2_000, value: 715_500 },
+      { timestamp: now - 1_000, value: 714_900 },
+    ],
+    [],
+    20_616,
+  );
+
+  assert.deepEqual(
+    history.map((point) => point.value),
+    [18_500, 19_000, 20_616],
+  );
+  assert.equal(history.at(-1)?.value, 20_616);
+});
+
+void test('preserves legitimate multi-fold portfolio growth', () => {
+  const now = Date.now();
+  const history = buildPortfolioHistory(
+    [
+      { timestamp: now - 3_000, value: 5_500 },
+      { timestamp: now - 2_000, value: 12_000 },
+      { timestamp: now - 1_000, value: 20_000 },
+    ],
+    [],
+    20_616,
+  );
+
+  assert.deepEqual(
+    history.map((point) => point.value),
+    [5_500, 12_000, 20_000, 20_616],
+  );
+});
+
+void test('falls back to venue shape when saved local history is corrupt', () => {
+  const now = Date.now();
+  const day = 86_400_000;
+  const history = buildPortfolioHistory(
+    [
+      { timestamp: now - day, value: 715_500 },
+      { timestamp: now - 1_000, value: 714_900 },
+    ],
+    [
+      {
+        profileId: 'hl-corrupt-local',
+        source: 'hyperliquid',
+        platform: 'Hyperliquid',
+        address: '0x0000000000000000000000000000000000000000',
+        points: [],
+        pnlPoints: [
+          { timestamp: now - 2 * day, value: 0 },
+          { timestamp: now - day, value: 500 },
+          { timestamp: now - 1_000, value: 1_400 },
+        ],
+        fetchedAt: now,
+        provider: 'Test venue history',
+        historyVersion: 4,
+      },
+    ],
+    20_616,
+  );
+  const pnl = buildDailyPortfolioPnlHistory(
+    history.map((point) => ({
+      ...point,
+      value: point.value - history[0].value,
+    })),
+  );
+
+  assert.equal(history[0]?.value, 19_216);
+  assert.equal(history.at(-1)?.value, 20_616);
+  assert.ok(history.every((point) => point.value < 30_000));
+  assert.ok(Math.abs(currentUtcDayPnl(pnl, now)) < 3 * 20_616);
+});
+
 void test('groups cumulative performance into positive and negative daily bars', () => {
   const dayOneMorning = Date.UTC(2026, 8, 16, 9);
   const dayOneClose = Date.UTC(2026, 8, 16, 20);

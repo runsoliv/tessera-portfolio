@@ -86,10 +86,12 @@ export function buildPortfolioHistory(
   currentValue: number,
 ): PortfolioHistoryPoint[] {
   const parsedHistories = parseVenueHistories(venueHistories);
-  const repairedLocal = repairTransientCompositionSpikes(
+  const current = Number.isFinite(currentValue) ? currentValue : 0;
+  const cleanedLocal = repairTransientCompositionSpikes(
     cleanHistoryPoints(localSnapshots),
   );
-  const current = Number.isFinite(currentValue) ? currentValue : 0;
+  const repairedLocal = removeExtremeLocalHistory(cleanedLocal, current);
+  const rejectedCorruptLocal = repairedLocal.length < cleanedLocal.length;
   const local = repairedLocal.map((point) => ({
     timestamp: point.timestamp,
     value: point.value,
@@ -105,6 +107,15 @@ export function buildPortfolioHistory(
   const localCurve = dedupeHistoryPoints([...local, currentAnchor]);
   const pnlCurve = buildVenuePnlHistory(parsedHistories);
   if (pnlCurve.length > 1) {
+    // A materially impossible saved valuation (for example a stale ticker
+    // resolving at 35x the portfolio's real value) makes the surrounding local
+    // regime unusable. In that case retain the venue's transfer-adjusted shape
+    // and anchor it to authoritative current equity rather than drawing a
+    // $700k plateau followed by a terminal collapse.
+    if (rejectedCorruptLocal) {
+      return anchorVenuePnlToCurrent(pnlCurve, currentAnchor);
+    }
+
     // Local snapshots are the authoritative whole-portfolio record. Venue P&L
     // only extends the chart to dates before local tracking began; replacing
     // the local curve here makes a restored wallet look like one giant gain.
@@ -124,13 +135,7 @@ export function buildPortfolioHistory(
     // Before the first local snapshot, anchor the available venue performance
     // shape to today's whole-portfolio equity. Non-venue holdings therefore
     // remain a constant offset instead of appearing as a terminal spike.
-    const latestPnl = pnlCurve.at(-1)?.value ?? 0;
-    const venueBackfill = pnlCurve.map((point) => ({
-      ...point,
-      value: Math.max(0, current + point.value - latestPnl),
-      sources: point.sources.map((source) => `${source} P&L`),
-    }));
-    return dedupeHistoryPoints([...venueBackfill, currentAnchor]);
+    return anchorVenuePnlToCurrent(pnlCurve, currentAnchor);
   }
 
   const histories = parsedHistories.filter(
@@ -171,6 +176,34 @@ export function buildPortfolioHistory(
   });
 
   return dedupeHistoryPoints([...backfill, ...localCurve]);
+}
+
+function removeExtremeLocalHistory(
+  points: PortfolioSnapshot[],
+  current: number,
+) {
+  if (!(current > 0)) return points;
+  const materialGap = Math.max(10_000, current * 0.5);
+  return points.filter((point) => {
+    if (!(point.value >= 0)) return false;
+    const larger = Math.max(point.value, current);
+    const smaller = Math.max(1, Math.min(point.value, current));
+    const extremeScale = larger / smaller > 8;
+    return !(extremeScale && Math.abs(point.value - current) >= materialGap);
+  });
+}
+
+function anchorVenuePnlToCurrent(
+  pnlCurve: PortfolioHistoryPoint[],
+  currentAnchor: PortfolioHistoryPoint,
+) {
+  const latestPnl = pnlCurve.at(-1)?.value ?? 0;
+  const venueBackfill = pnlCurve.map((point) => ({
+    ...point,
+    value: Math.max(0, currentAnchor.value + point.value - latestPnl),
+    sources: point.sources.map((source) => `${source} P&L`),
+  }));
+  return dedupeHistoryPoints([...venueBackfill, currentAnchor]);
 }
 
 export function buildPortfolioPnlHistory(
