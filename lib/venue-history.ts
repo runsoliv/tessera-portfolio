@@ -3,7 +3,7 @@ import type {
   VenueHistoryPoint,
   VenueHistorySeries,
 } from '@/lib/portfolio';
-import { repairTransientCompositionSpikes } from '@/lib/analytics';
+import { repairTransientCompositionSpikes } from './history-utils.ts';
 
 export const VENUE_HISTORY_VERSION = 3;
 
@@ -12,6 +12,11 @@ export type WalletHistoryPayload = Omit<VenueHistorySeries, 'profileId'>;
 export type PortfolioHistoryPoint = PortfolioSnapshot & {
   origin: 'venue' | 'local';
   sources: string[];
+};
+
+export type DailyPortfolioPnlPoint = PortfolioHistoryPoint & {
+  positive: number;
+  negative: number;
 };
 
 export function parseVenueHistories(value: unknown): VenueHistorySeries[] {
@@ -94,15 +99,20 @@ export function buildPortfolioHistory(
     sources: ['Current portfolio'],
   };
   const localCurve = dedupeHistoryPoints([...local, currentAnchor]);
-  const pnlCurve = buildPortfolioPnlHistory(parsedHistories);
+  const pnlCurve = buildVenuePnlHistory(parsedHistories);
   if (pnlCurve.length > 1) {
-    const latestPnl = pnlCurve.at(-1)?.value ?? 0;
-    const transferAdjusted = pnlCurve.map((point) => ({
-      ...point,
-      value: Math.max(0, currentAnchor.value + point.value - latestPnl),
-      sources: point.sources.map((source) => `${source} P&L`),
-    }));
-    return dedupeHistoryPoints([...transferAdjusted, currentAnchor]);
+    const firstLocal = localCurve[0];
+    const pnlAtLocalStart = valueAt(pnlCurve, firstLocal.timestamp);
+    const venueBackfill = pnlCurve
+      .filter((point) => point.timestamp < firstLocal.timestamp)
+      .map((point) => ({
+        ...point,
+        value: Math.max(0, firstLocal.value + point.value - pnlAtLocalStart),
+        sources: point.sources.map((source) => `${source} P&L`),
+      }));
+    return repairTransientCompositionSpikes(
+      dedupeHistoryPoints([...venueBackfill, ...localCurve]),
+    );
   }
 
   const histories = parsedHistories.filter(
@@ -148,6 +158,51 @@ export function buildPortfolioHistory(
 }
 
 export function buildPortfolioPnlHistory(
+  localSnapshots: PortfolioSnapshot[],
+  venueHistories: VenueHistorySeries[],
+  currentValue: number,
+): PortfolioHistoryPoint[] {
+  const equityHistory = buildPortfolioHistory(
+    localSnapshots,
+    venueHistories,
+    currentValue,
+  );
+  const baseline = equityHistory[0]?.value;
+  if (equityHistory.length < 2 || !Number.isFinite(baseline)) return [];
+  return equityHistory.map((point) => ({
+    ...point,
+    value: point.value - Number(baseline),
+  }));
+}
+
+export function buildDailyPortfolioPnlHistory(
+  cumulativeHistory: PortfolioHistoryPoint[],
+): DailyPortfolioPnlPoint[] {
+  const ordered = dedupeHistoryPoints(cumulativeHistory);
+  if (ordered.length < 2) return [];
+  const days = new Map<string, PortfolioHistoryPoint>();
+  for (const point of ordered) {
+    const date = new Date(point.timestamp);
+    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    days.set(key, point);
+  }
+
+  let previousClose = ordered[0].value;
+  return Array.from(days.values()).map((last) => {
+    const value = last.value - previousClose;
+    previousClose = last.value;
+    return {
+      timestamp: last.timestamp,
+      value,
+      positive: Math.max(0, value),
+      negative: Math.min(0, value),
+      origin: last.origin,
+      sources: last.sources,
+    };
+  });
+}
+
+function buildVenuePnlHistory(
   venueHistories: VenueHistorySeries[],
 ): PortfolioHistoryPoint[] {
   const histories = parseVenueHistories(venueHistories).filter(

@@ -44,10 +44,10 @@ import {
 } from '@/lib/analytics';
 import { formatMoney } from '@/lib/portfolio';
 import {
+  buildDailyPortfolioPnlHistory,
   buildPortfolioHistory,
   buildPortfolioPnlHistory,
   historySourceLabels,
-  pnlHistorySourceLabels,
 } from '@/lib/venue-history';
 
 type AllocationMode = 'equity' | 'exposure';
@@ -78,19 +78,28 @@ export default function AnalyticsPage() {
     [combinedHistory, customRange, range],
   );
   const combinedPnlHistory = useMemo(
-    () => buildPortfolioPnlHistory(portfolio.venueHistories ?? []),
-    [portfolio.venueHistories],
+    () =>
+      buildPortfolioPnlHistory(
+        portfolio.snapshots,
+        portfolio.venueHistories ?? [],
+        analytics.totalValue,
+      ),
+    [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories],
   );
   const pnlHistory = useMemo(
     () => filterSnapshots(combinedPnlHistory, range, customRange),
     [combinedPnlHistory, customRange, range],
   );
+  const combinedDailyPnlHistory = useMemo(
+    () => buildDailyPortfolioPnlHistory(combinedPnlHistory),
+    [combinedPnlHistory],
+  );
+  const dailyPnlHistory = useMemo(
+    () => filterSnapshots(combinedDailyPnlHistory, range, customRange),
+    [combinedDailyPnlHistory, customRange, range],
+  );
   const historySources = useMemo(
     () => historySourceLabels(portfolio.venueHistories ?? []),
-    [portfolio.venueHistories],
-  );
-  const pnlHistorySources = useMemo(
-    () => pnlHistorySourceLabels(portfolio.venueHistories ?? []),
     [portfolio.venueHistories],
   );
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =
@@ -396,12 +405,8 @@ export default function AnalyticsPage() {
 
       <Panel className="mt-3 overflow-hidden">
         <PanelHeader
-          title="Historical venue P&L"
-          description={
-            pnlHistorySources.length
-              ? `${pnlHistorySources.join(' + ')} cumulative P&L · transfer-adjusted venue data`
-              : 'Historical P&L appears when a connected venue exposes it'
-          }
+          title="Cumulative portfolio P&L"
+          description="Whole portfolio from local tracking · available venue P&L backfills the period before tracking began"
           aside={
             <span className="rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
               {rangeLabel}
@@ -482,7 +487,86 @@ export default function AnalyticsPage() {
               </AreaChart>
             </ChartContainer>
           ) : (
-            <HistoryEmptyState message="Historical P&L is unavailable for this venue or selected range. Hyperliquid exposes public history; standard Lighter account history requires venue authorization." />
+            <HistoryEmptyState message="Whole-portfolio P&L tracking has started. Refresh prices to record the next point." />
+          )}
+        </div>
+      </Panel>
+
+      <Panel className="mt-3 overflow-hidden">
+        <PanelHeader
+          title="Daily portfolio P&L"
+          description="One bar per day across crypto, stocks, spot, perps and staked assets · contributions and withdrawals excluded"
+          aside={
+            <span className="rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
+              {rangeLabel}
+            </span>
+          }
+        />
+        <div className="p-4 sm:p-5">
+          {dailyPnlHistory.length ? (
+            <ChartContainer
+              config={{
+                positive: { label: 'Gain', color: 'var(--positive)' },
+                negative: { label: 'Loss', color: 'var(--negative)' },
+              }}
+              className="h-[285px] w-full aspect-auto"
+            >
+              <BarChart
+                data={dailyPnlHistory}
+                margin={{ left: 4, right: 16, top: 18, bottom: 0 }}
+              >
+                <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+                <ReferenceLine
+                  y={0}
+                  stroke="var(--border)"
+                  strokeDasharray="4 4"
+                />
+                <XAxis
+                  dataKey="timestamp"
+                  type="number"
+                  scale="time"
+                  domain={historyDomain}
+                  allowDataOverflow={range === 'CUSTOM'}
+                  axisLine={false}
+                  tickLine={false}
+                  minTickGap={42}
+                  tickFormatter={(value) =>
+                    formatHistoryTick(Number(value), range, customRange)
+                  }
+                  tick={{ fill: 'var(--chart-label)', fontSize: 11 }}
+                />
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  width={68}
+                  tickCount={5}
+                  domain={['auto', 'auto']}
+                  tickFormatter={(value) =>
+                    privacy ? '••' : formatCompactMoneyAxis(Number(value))
+                  }
+                  tick={{ fill: 'var(--chart-label)', fontSize: 11 }}
+                />
+                <Tooltip content={<DailyHistoryTooltip privacy={privacy} />} />
+                <Bar
+                  dataKey="positive"
+                  stackId="daily"
+                  fill="var(--positive)"
+                  fillOpacity={0.85}
+                  radius={[5, 5, 3, 3]}
+                  maxBarSize={48}
+                />
+                <Bar
+                  dataKey="negative"
+                  stackId="daily"
+                  fill="var(--negative)"
+                  fillOpacity={0.85}
+                  radius={[3, 3, 5, 5]}
+                  maxBarSize={48}
+                />
+              </BarChart>
+            </ChartContainer>
+          ) : (
+            <HistoryEmptyState message="Daily bars appear after the portfolio has at least two saved valuation points. Tracking is active now." />
           )}
         </div>
       </Panel>
@@ -750,6 +834,37 @@ function HistoryTooltip({
         {point?.origin === 'venue'
           ? point.sources?.join(' + ') || 'Venue history'
           : 'Local snapshot'}
+      </p>
+    </Tip>
+  );
+}
+
+function DailyHistoryTooltip({
+  active,
+  payload,
+  privacy,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    payload?: { label?: string; value?: number };
+  }>;
+  privacy: boolean;
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  const value = Number(point?.value ?? 0);
+  return (
+    <Tip>
+      <p className="text-[10px] font-medium text-muted-foreground">
+        {point?.label}
+      </p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        Whole-portfolio daily P&amp;L
+      </p>
+      <p
+        className={`mt-1 font-mono text-[13px] font-semibold ${value >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+      >
+        {privacy ? '••••' : `${value > 0 ? '+' : ''}${formatMoney(value)}`}
       </p>
     </Tip>
   );

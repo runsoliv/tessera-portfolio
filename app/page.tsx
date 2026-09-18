@@ -17,6 +17,8 @@ import {
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   Pie,
   PieChart,
@@ -47,10 +49,10 @@ import {
 } from '@/lib/analytics';
 import { formatMoney } from '@/lib/portfolio';
 import {
+  buildDailyPortfolioPnlHistory,
   buildPortfolioHistory,
   buildPortfolioPnlHistory,
   historySourceLabels,
-  pnlHistorySourceLabels,
 } from '@/lib/venue-history';
 
 export default function OverviewPage() {
@@ -87,24 +89,33 @@ export default function OverviewPage() {
     [combinedHistory, customRange, range],
   );
   const combinedPnlHistory = useMemo(
-    () => buildPortfolioPnlHistory(portfolio.venueHistories ?? []),
-    [portfolio.venueHistories],
+    () =>
+      buildPortfolioPnlHistory(
+        portfolio.snapshots,
+        portfolio.venueHistories ?? [],
+        analytics.totalValue,
+      ),
+    [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories],
   );
   const pnlHistory = useMemo(
     () => filterSnapshots(combinedPnlHistory, range, customRange),
     [combinedPnlHistory, customRange, range],
   );
+  const combinedDailyPnlHistory = useMemo(
+    () => buildDailyPortfolioPnlHistory(combinedPnlHistory),
+    [combinedPnlHistory],
+  );
+  const dailyPnlHistory = useMemo(
+    () => filterSnapshots(combinedDailyPnlHistory, range, customRange),
+    [combinedDailyPnlHistory, customRange, range],
+  );
   const historySources = useMemo(
     () => historySourceLabels(portfolio.venueHistories ?? []),
     [portfolio.venueHistories],
   );
-  const pnlHistorySources = useMemo(
-    () => pnlHistorySourceLabels(portfolio.venueHistories ?? []),
-    [portfolio.venueHistories],
-  );
   const primaryHistory = historyMetric === 'equity' ? history : pnlHistory;
   const primaryHistorySources =
-    historyMetric === 'equity' ? historySources : pnlHistorySources;
+    historyMetric === 'equity' ? historySources : ['Whole portfolio'];
   const primaryHistoryColor =
     historyMetric === 'equity' ? 'var(--primary)' : 'var(--information)';
   const canSyncVenueHistory = importProfiles.some(
@@ -309,7 +320,7 @@ export default function OverviewPage() {
                     ? `${primaryHistorySources.join(' + ')} · ${historyMetric === 'equity' ? 'transfer-adjusted equity' : 'cumulative trading P&L'}`
                     : historyMetric === 'equity'
                       ? 'Local portfolio snapshots'
-                      : 'Connect a venue that exposes P&L history'}
+                      : 'Whole-portfolio tracking starts with the first saved snapshot'}
                 </p>
               </div>
               <div className="flex flex-col items-end gap-1.5">
@@ -448,7 +459,7 @@ export default function OverviewPage() {
                 message={
                   historyMetric === 'equity'
                     ? 'Two history points are needed to draw the selected equity range.'
-                    : 'No historical P&L was returned for this venue and range. Refresh venue history or select a longer range.'
+                    : 'Whole-portfolio P&L tracking has started. Refresh prices to record the next point.'
                 }
               />
             )}
@@ -458,12 +469,8 @@ export default function OverviewPage() {
 
       <Panel className="mt-3 overflow-hidden">
         <PanelHeader
-          title="Historical venue P&L"
-          description={
-            pnlHistorySources.length
-              ? `${pnlHistorySources.join(' + ')} cumulative P&L · transfer-adjusted venue data`
-              : 'Historical P&L appears when a connected venue exposes it'
-          }
+          title="Daily portfolio P&L"
+          description="Every priced holding combined · additions and removals excluded from performance"
           aside={
             <span className="rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
               {rangeLabel}
@@ -471,34 +478,18 @@ export default function OverviewPage() {
           }
         />
         <div className="p-4 sm:p-5">
-          {pnlHistory.length > 1 ? (
+          {dailyPnlHistory.length ? (
             <ChartContainer
               config={{
-                value: {
-                  label: 'Cumulative P&L',
-                  color: 'var(--information)',
-                },
+                positive: { label: 'Gain', color: 'var(--positive)' },
+                negative: { label: 'Loss', color: 'var(--negative)' },
               }}
               className="h-[285px] w-full aspect-auto"
             >
-              <AreaChart
-                data={pnlHistory}
+              <BarChart
+                data={dailyPnlHistory}
                 margin={{ left: 4, right: 16, top: 18, bottom: 0 }}
               >
-                <defs>
-                  <linearGradient id="overviewPnl" x1="0" y1="0" x2="0" y2="1">
-                    <stop
-                      offset="0%"
-                      stopColor="var(--information)"
-                      stopOpacity={0.22}
-                    />
-                    <stop
-                      offset="100%"
-                      stopColor="var(--information)"
-                      stopOpacity={0}
-                    />
-                  </linearGradient>
-                </defs>
                 <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
                 <ReferenceLine
                   y={0}
@@ -530,31 +521,27 @@ export default function OverviewPage() {
                   }
                   tick={{ fill: 'var(--chart-label)', fontSize: 11 }}
                 />
-                <Tooltip
-                  content={
-                    <ValueTooltip
-                      privacy={privacy}
-                      metric="Cumulative P&L"
-                      signed
-                    />
-                  }
+                <Tooltip content={<DailyPnlTooltip privacy={privacy} />} />
+                <Bar
+                  dataKey="positive"
+                  stackId="daily"
+                  fill="var(--positive)"
+                  fillOpacity={0.85}
+                  radius={[5, 5, 3, 3]}
+                  maxBarSize={44}
                 />
-                <Area
-                  type="linear"
-                  dataKey="value"
-                  stroke="var(--information)"
-                  strokeWidth={2}
-                  fill="url(#overviewPnl)"
-                  activeDot={{
-                    r: 4,
-                    fill: 'var(--information)',
-                    stroke: 'var(--card)',
-                  }}
+                <Bar
+                  dataKey="negative"
+                  stackId="daily"
+                  fill="var(--negative)"
+                  fillOpacity={0.85}
+                  radius={[3, 3, 5, 5]}
+                  maxBarSize={44}
                 />
-              </AreaChart>
+              </BarChart>
             </ChartContainer>
           ) : (
-            <HistoryEmptyState message="Historical P&L is unavailable for this venue or selected range. Hyperliquid supports public backfill; standard Lighter account history requires venue authorization." />
+            <HistoryEmptyState message="Daily bars appear after the portfolio has at least two saved valuation points. Tracking is active now." />
           )}
         </div>
       </Panel>
@@ -839,6 +826,37 @@ function ValueTooltip({
         {point?.origin === 'venue'
           ? point.sources?.join(' + ') || 'Venue history'
           : 'Local snapshot'}
+      </p>
+    </div>
+  );
+}
+
+function DailyPnlTooltip({
+  active,
+  payload,
+  privacy,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    payload?: { label?: string; value?: number };
+  }>;
+  privacy: boolean;
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  const value = Number(point?.value ?? 0);
+  return (
+    <div className="rounded-lg border border-border bg-popover px-3 py-2 shadow-lg">
+      <p className="text-[10px] font-medium text-muted-foreground">
+        {point?.label}
+      </p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        Whole-portfolio daily P&amp;L
+      </p>
+      <p
+        className={`mt-1 font-mono text-[13px] font-semibold ${value >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+      >
+        {privacy ? '••••' : `${value > 0 ? '+' : ''}${formatMoney(value)}`}
       </p>
     </div>
   );

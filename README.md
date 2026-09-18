@@ -13,7 +13,7 @@ Tessera is a local-first portfolio dashboard for crypto, stocks, staked assets, 
 - Saved import profiles that own their positions and can be renamed or removed
 - Live crypto and stock pricing with provider fallbacks
 - Portfolio equity, exposure, margin, leverage, liquidation, and platform analytics
-- Historical equity and cumulative venue P&L charts with persistent custom ranges
+- Whole-portfolio cumulative P&L and daily gain/loss bars with persistent custom ranges
 - Price targets, target-value modeling, position adjustments, and a configurable dust cutoff
 - Light and dark themes
 - Browser-local persistence with JSON backup and restore
@@ -64,6 +64,8 @@ Screenshot parsing runs locally with Tesseract.js. Detected tickers, quantities,
 The dashboard uses multiple public providers, including CoinGecko, DEX Screener, Hyperliquid, Lighter, Jupiter, Blockscout, Robinhood Chain, and public stock quote endpoints. Availability and rate limits are controlled by those providers. Cached prices remain visible when a refresh temporarily fails.
 
 Lighter does not expose complete historical equity and P&L for every standard account through its public endpoints. Local snapshots continue tracking those accounts after import.
+
+Whole-portfolio P&L uses transfer-adjusted local snapshots, so adding, removing, or resizing a position does not become artificial performance. Available venue P&L backfills the period before local tracking began; after that point every priced holding contributes to the cumulative line and daily bars.
 
 ## Perpetual accounting
 
