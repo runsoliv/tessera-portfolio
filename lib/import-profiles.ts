@@ -12,6 +12,8 @@ const PROFILE_SOURCES = new Set<ImportProfileSource>([
   'screenshot',
 ]);
 
+export const WALLET_SNAPSHOT_VERSION = 11;
+
 export function parseImportProfiles(value: unknown): ImportProfile[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -314,6 +316,10 @@ function createProfile(
     network: network?.trim() || undefined,
     createdAt: now,
     lastImportedAt: now,
+    snapshotVersion:
+      source === 'hyperliquid' || source === 'lighter'
+        ? WALLET_SNAPSHOT_VERSION
+        : undefined,
   };
 }
 

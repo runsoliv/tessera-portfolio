@@ -94,7 +94,7 @@ export default function MarginPage() {
           icon={Gauge}
           label="Margin used"
           value={privacy ? '••••' : formatMoney(analytics.marginUsed)}
-          detail={`${analytics.marginUtilization.toFixed(1)}% of trading equity`}
+          detail={`${analytics.marginUtilization.toFixed(1)}% of leverage equity`}
         />
         <MetricCard
           icon={analytics.perpPnl >= 0 ? ArrowUpRight : ArrowDownRight}

@@ -5,6 +5,7 @@ import {
   type PortfolioSnapshot,
 } from '@/lib/portfolio';
 import { repairTransientCompositionSpikes } from '@/lib/history-utils';
+import { usableVenuePositionEquity } from '@/lib/venue-equity';
 
 export {
   rebasePortfolioSnapshots,
@@ -21,6 +22,7 @@ export type ValuedHolding = Holding & {
   allocation: number;
   exposureValue: number;
   exposureAllocation: number;
+  leverageEquity: number;
   dayPnl: number;
   unrealizedPnl: number | null;
   stakingRewardsQuantity: number | null;
@@ -107,15 +109,24 @@ export function calculateAnalytics(
         : calculatedPerpPnl;
     const reportedEquity = Number(holding.equityOverride);
     const equityMarkPrice = Number(holding.equityMarkPrice);
-    const value =
-      isPerp && Number.isFinite(reportedEquity) && reportedEquity >= 0
-        ? reportedEquity +
-          (Number.isFinite(equityMarkPrice)
-            ? direction * holding.amount * (price - equityMarkPrice)
-            : 0)
-        : isPerp
-          ? margin + perpPnl
-          : notional;
+    const liveReportedEquity =
+      reportedEquity +
+      (Number.isFinite(equityMarkPrice)
+        ? direction * holding.amount * (price - equityMarkPrice)
+        : 0);
+    const value = isPerp
+      ? Number.isFinite(reportedEquity) && reportedEquity >= 0
+        ? Math.max(0, liveReportedEquity)
+        : Math.max(0, margin + perpPnl)
+      : notional;
+    const leverageEquity = isPerp
+      ? usableVenuePositionEquity({
+          importedFrom: holding.importedFrom,
+          margin,
+          unrealizedPnl: perpPnl,
+          reportedEquity: liveReportedEquity,
+        })
+      : 0;
     const change = Number(holding.change24h);
     const previousPrice =
       Number.isFinite(change) && change > -99.99
@@ -194,6 +205,7 @@ export function calculateAnalytics(
       allocation: 0,
       exposureValue: isPerp ? notional : value,
       exposureAllocation: 0,
+      leverageEquity,
       dayPnl,
       unrealizedPnl,
       stakingRewardsQuantity,
@@ -305,6 +317,10 @@ export function calculateAnalytics(
     0,
   );
   const marginUsed = perps.reduce((sum, holding) => sum + holding.margin, 0);
+  const leverageEquity = perps.reduce(
+    (sum, holding) => sum + holding.leverageEquity,
+    0,
+  );
   const perpPnl = perps.reduce(
     (sum, holding) => sum + Number(holding.unrealizedPnl ?? 0),
     0,
@@ -518,16 +534,21 @@ export function calculateAnalytics(
     perpNotional,
     netPerpNotional,
     tradingEquity,
+    leverageEquity,
     marginUsed,
     perpPnl,
     grossExposure,
     netExposure,
     effectiveLeverage:
-      tradingEquity > 0 ? perpNotional / tradingEquity : perps.length ? 100 : 0,
-    netLeverage: tradingEquity > 0 ? netPerpNotional / tradingEquity : 0,
+      leverageEquity > 0
+        ? perpNotional / leverageEquity
+        : perps.length
+          ? 100
+          : 0,
+    netLeverage: leverageEquity > 0 ? netPerpNotional / leverageEquity : 0,
     marginUtilization:
-      tradingEquity > 0
-        ? (marginUsed / tradingEquity) * 100
+      leverageEquity > 0
+        ? (marginUsed / leverageEquity) * 100
         : perps.length
           ? 100
           : 0,

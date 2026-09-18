@@ -79,19 +79,19 @@ export default function PlatformRiskPage() {
     (sum, platform) => sum + platform.perpNotional,
     0,
   );
-  const totalTradingEquity = leveragedPlatforms.reduce(
-    (sum, platform) => sum + platform.tradingEquity,
+  const totalLeverageEquity = leveragedPlatforms.reduce(
+    (sum, platform) => sum + platform.leverageEquity,
     0,
   );
   const totalNetNotional = leveragedPlatforms.reduce(
     (sum, platform) => sum + platform.netPerpNotional,
     0,
   );
-  const aggregateGrossLeverage = totalTradingEquity
-    ? totalNotional / totalTradingEquity
+  const aggregateGrossLeverage = totalLeverageEquity
+    ? totalNotional / totalLeverageEquity
     : 0;
-  const aggregateNetLeverage = totalTradingEquity
-    ? totalNetNotional / totalTradingEquity
+  const aggregateNetLeverage = totalLeverageEquity
+    ? totalNetNotional / totalLeverageEquity
     : 0;
   const totalLivePnl = platformRisks.reduce(
     (sum, platform) => sum + platform.livePnl,
@@ -173,7 +173,7 @@ export default function PlatformRiskPage() {
           icon={Gauge}
           label="Gross perp leverage"
           value={`${aggregateGrossLeverage.toFixed(2)}×`}
-          detail="Gross notional ÷ trading equity"
+          detail="Gross notional ÷ leverage equity"
           tone={aggregateGrossLeverage >= 5 ? 'negative' : 'default'}
         />
         <MetricCard
@@ -197,7 +197,7 @@ export default function PlatformRiskPage() {
         />
         <MetricCard
           icon={ArrowUpRight}
-          label="All-time staking rewards"
+          label="Staking reward value"
           value={
             stakingRewardsKnownCount
               ? privacy
@@ -205,7 +205,11 @@ export default function PlatformRiskPage() {
                 : signedMoney(totalStakingRewards)
               : 'Not available'
           }
-          detail={`${stakingRewardsKnownCount} venue-reported or principal-derived balance${stakingRewardsKnownCount === 1 ? '' : 's'}`}
+          detail={
+            privacy
+              ? 'Reward token growth; excludes price return'
+              : aggregateStakingRewardDetail(platformRisks)
+          }
           tone={totalStakingRewards >= 0 ? 'positive' : 'negative'}
         />
         <MetricCard
@@ -297,7 +301,7 @@ export default function PlatformRiskPage() {
           <Panel className="mt-3 overflow-hidden">
             <PanelHeader
               title={`${activePlatform.platform} capital and exposure`}
-              description="Trading equity includes venue-reported open P&L once and excludes staked or unstaking assets from leverage"
+              description="Portfolio totals use venue equity; leverage separately uses position margin plus signed open P&L"
               aside={
                 <span className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
                   {activePlatform.longCount} long · {activePlatform.shortCount}{' '}
@@ -320,7 +324,16 @@ export default function PlatformRiskPage() {
                     ? '••••'
                     : formatMoney(activePlatform.tradingEquity, true)
                 }
-                detail="Current account equity incl. open P&L"
+                detail="Venue-reported account equity"
+              />
+              <VenueMetric
+                label="Leverage equity"
+                value={
+                  privacy
+                    ? '••••'
+                    : formatMoney(activePlatform.leverageEquity, true)
+                }
+                detail="Position margin + signed open P&L"
               />
               <VenueMetric
                 label="Liquid spot"
@@ -342,7 +355,7 @@ export default function PlatformRiskPage() {
                 tone="muted"
               />
               <VenueMetric
-                label="All-time staking rewards"
+                label="Staking rewards (not P&L)"
                 value={
                   activePlatform.stakingRewardsKnownCount
                     ? privacy
@@ -352,7 +365,9 @@ export default function PlatformRiskPage() {
                 }
                 detail={
                   activePlatform.stakingRewardsKnownCount
-                    ? `${activePlatform.stakingRewardsKnownCount} reported or principal-derived balance${activePlatform.stakingRewardsKnownCount === 1 ? '' : 's'}`
+                    ? privacy
+                      ? 'Reward token growth; excludes price return'
+                      : stakingRewardDetail(activePlatform)
                     : 'Venue reward basis unavailable'
                 }
                 tone="positive"
@@ -398,7 +413,7 @@ export default function PlatformRiskPage() {
               <VenueMetric
                 label="Gross account leverage"
                 value={`${activePlatform.grossLeverage.toFixed(2)}×`}
-                detail="Gross notional ÷ trading equity"
+                detail="Gross notional ÷ leverage equity"
                 tone={
                   activePlatform.grossLeverage >= 5 ? 'negative' : 'default'
                 }
@@ -406,7 +421,7 @@ export default function PlatformRiskPage() {
               <VenueMetric
                 label="Net account leverage"
                 value={signedMultiple(activePlatform.netLeverage)}
-                detail="Net notional ÷ trading equity"
+                detail="Net notional ÷ leverage equity"
               />
               <VenueMetric
                 label="Perp / liquid spot"
@@ -424,7 +439,7 @@ export default function PlatformRiskPage() {
                     ? '••••'
                     : formatMoney(activePlatform.marginUsed, true)
                 }
-                detail={`${activePlatform.marginUtilization.toFixed(1)}% of trading equity`}
+                detail={`${activePlatform.marginUtilization.toFixed(1)}% of leverage equity`}
               />
               <VenueMetric
                 label="Free trading equity"
@@ -464,9 +479,31 @@ export default function PlatformRiskPage() {
                 }
               />
               <VenueMetric
+                label="Staked asset P&L"
+                value={
+                  activePlatform.stakedPnlKnownCount
+                    ? privacy
+                      ? '••••'
+                      : signedMoney(activePlatform.stakedPnl)
+                    : 'Cost basis needed'
+                }
+                detail={
+                  activePlatform.stakedPnlKnownCount
+                    ? `${activePlatform.stakedPnlKnownCount} staked cost-basis position${activePlatform.stakedPnlKnownCount === 1 ? '' : 's'}`
+                    : 'Rewards are shown separately above'
+                }
+                tone={
+                  activePlatform.stakedPnlKnownCount
+                    ? activePlatform.stakedPnl >= 0
+                      ? 'positive'
+                      : 'negative'
+                    : 'muted'
+                }
+              />
+              <VenueMetric
                 label="Total open P&L"
                 value={privacy ? '••••' : signedMoney(activePlatform.livePnl)}
-                detail="Perp + known spot unrealized"
+                detail="Perp + known spot/staked cost-basis P&L"
                 tone={activePlatform.livePnl >= 0 ? 'positive' : 'negative'}
               />
               <VenueMetric
@@ -1287,6 +1324,41 @@ function signedMoney(value: number) {
 
 function signedMultiple(value: number) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}×`;
+}
+
+function stakingRewardDetail(platform: PlatformRiskSummary) {
+  const rewards = platform.stakingRewardBreakdown
+    .map(
+      (reward) =>
+        `+${formatTokenQuantity(reward.quantity)} ${reward.symbol}`,
+    )
+    .join(' · ');
+  return rewards
+    ? `${rewards} earned above principal; excludes market-price return`
+    : 'Reward value only; excludes market-price return';
+}
+
+function aggregateStakingRewardDetail(platforms: PlatformRiskSummary[]) {
+  const rewards = new Map<string, number>();
+  for (const platform of platforms) {
+    for (const reward of platform.stakingRewardBreakdown)
+      rewards.set(
+        reward.symbol,
+        (rewards.get(reward.symbol) ?? 0) + reward.quantity,
+      );
+  }
+  const summary = Array.from(rewards, ([symbol, quantity]) =>
+    `+${formatTokenQuantity(quantity)} ${symbol}`,
+  ).join(' · ');
+  return summary
+    ? `${summary}; excludes market-price return`
+    : 'No venue reward basis available';
+}
+
+function formatTokenQuantity(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: value >= 100 ? 2 : value >= 1 ? 4 : 6,
+  }).format(value);
 }
 
 function formatLeverage(value: number | undefined) {

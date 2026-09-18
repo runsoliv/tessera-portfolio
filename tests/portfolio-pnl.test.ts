@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  repairCompositionSteps,
   rebasePortfolioSnapshots,
   repairTransientCompositionSpikes,
 } from '../lib/history-utils.ts';
 import {
   buildDailyPortfolioPnlHistory,
+  buildPortfolioHistory,
   buildPortfolioPnlHistory,
-  currentCalendarDayPnl,
+  currentUtcDayPnl,
   type PortfolioHistoryPoint,
 } from '../lib/venue-history.ts';
 
@@ -40,6 +42,40 @@ void test('position additions and removals do not become portfolio P&L', () => {
 
   assert.equal(history[0]?.value, 0);
   assert.equal(history.at(-1)?.value, 100);
+});
+
+void test('repairs a stale saved endpoint without turning composition into P&L', () => {
+  const now = Date.now();
+  const history = buildPortfolioHistory(
+    [
+      { timestamp: now - 120_000, value: 5_000 },
+      { timestamp: now - 60_000, value: 7_000 },
+    ],
+    [],
+    16_000,
+  );
+
+  assert.equal(history[0]?.value, 14_000);
+  assert.equal(history.at(-1)?.value, 16_000);
+  assert.equal(
+    Number(history.at(-1)?.value) - Number(history[0]?.value),
+    2_000,
+  );
+});
+
+void test('removes a large wallet-restoration step from equity and P&L history', () => {
+  const now = Date.now();
+  const repaired = repairCompositionSteps([
+    { timestamp: now - 3 * 60 * 60_000, value: 500 },
+    { timestamp: now - 2 * 60 * 60_000, value: 1_500 },
+    { timestamp: now - 60 * 60_000, value: 20_500 },
+    { timestamp: now, value: 20_700 },
+  ]);
+
+  assert.deepEqual(
+    repaired.map((point) => point.value),
+    [19_500, 20_500, 20_500, 20_700],
+  );
 });
 
 void test('repairs an overnight remove-and-add-back valley', () => {
@@ -99,14 +135,14 @@ void test('uses venue P&L before local whole-portfolio tracking begins', () => {
   );
 
   assert.equal(history[0]?.value, 0);
-  assert.equal(history.at(-1)?.value, 600);
+  assert.equal(history.at(-1)?.value, 500);
   assert.equal(history.at(-1)?.origin, 'local');
 });
 
 void test('groups cumulative performance into positive and negative daily bars', () => {
-  const dayOneMorning = new Date(2026, 8, 16, 9).getTime();
-  const dayOneClose = new Date(2026, 8, 16, 20).getTime();
-  const dayTwoClose = new Date(2026, 8, 17, 20).getTime();
+  const dayOneMorning = Date.UTC(2026, 8, 16, 9);
+  const dayOneClose = Date.UTC(2026, 8, 16, 20);
+  const dayTwoClose = Date.UTC(2026, 8, 17, 20);
   const cumulative: PortfolioHistoryPoint[] = [
     {
       timestamp: dayOneMorning,
@@ -143,9 +179,9 @@ void test('groups cumulative performance into positive and negative daily bars',
   );
 });
 
-void test('headline P&L resets outside the current local calendar day', () => {
-  const yesterday = new Date(2026, 8, 17, 23, 59).getTime();
-  const today = new Date(2026, 8, 18, 0, 1).getTime();
+void test('headline P&L resets at the 00:00 UTC daily-candle boundary', () => {
+  const yesterday = Date.UTC(2026, 8, 17, 23, 59);
+  const today = Date.UTC(2026, 8, 18, 0, 1);
   const point = {
     timestamp: yesterday,
     value: 250,
@@ -155,9 +191,6 @@ void test('headline P&L resets outside the current local calendar day', () => {
     sources: ['Local snapshot'],
   };
 
-  assert.equal(currentCalendarDayPnl([point], today), 0);
-  assert.equal(
-    currentCalendarDayPnl([{ ...point, timestamp: today }], today),
-    250,
-  );
+  assert.equal(currentUtcDayPnl([point], today), 0);
+  assert.equal(currentUtcDayPnl([{ ...point, timestamp: today }], today), 250);
 });

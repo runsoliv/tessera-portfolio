@@ -63,3 +63,34 @@ export function repairTransientCompositionSpikes<T extends PortfolioSnapshot>(
     );
   });
 }
+
+/**
+ * Reconnects history segments separated by an obviously non-market step.
+ * These can be left behind when an older app version restores a wallet/profile
+ * without rebasing the already-saved snapshots. Work backwards from the
+ * current segment so the latest, authoritative portfolio value never changes.
+ */
+export function repairCompositionSteps<T extends PortfolioSnapshot>(
+  snapshots: T[],
+) {
+  const ordered = repairTransientCompositionSpikes(snapshots);
+  if (ordered.length < 2) return ordered;
+  const repaired = ordered.map((point) => ({ ...point }));
+  let earlierOffset = 0;
+
+  for (let index = ordered.length - 2; index >= 0; index -= 1) {
+    const point = ordered[index];
+    const next = ordered[index + 1];
+    const step = next.value - point.value;
+    const smallerLevel = Math.max(
+      100,
+      Math.min(Math.abs(point.value), Math.abs(next.value)),
+    );
+    const abruptCompositionStep =
+      Math.abs(step) >= 2_500 &&
+      Math.abs(step) / smallerLevel >= 0.75;
+    if (abruptCompositionStep) earlierOffset += step;
+    repaired[index].value = Math.max(0, point.value + earlierOffset);
+  }
+  return repaired;
+}

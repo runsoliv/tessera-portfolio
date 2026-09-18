@@ -52,15 +52,26 @@ import type { SparklineSeries } from '@/lib/sparklines';
 import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioHistory,
-  buildPortfolioPnlHistory,
-  currentCalendarDayPnl,
+  currentUtcDayPnl,
   historySourceLabels,
 } from '@/lib/venue-history';
+
+const DAILY_PNL_STABLECOINS = new Set([
+  'USDC',
+  'USDT',
+  'DAI',
+  'USDE',
+  'USDS',
+  'PYUSD',
+  'FDUSD',
+  'TUSD',
+]);
 
 export default function OverviewPage() {
   const [historyMetric, setHistoryMetric] = useState<'equity' | 'pnl'>(
     'equity',
   );
+  const [utcDayKey, setUtcDayKey] = useState(() => utcCalendarDay(Date.now()));
   const {
     portfolio,
     analytics,
@@ -78,12 +89,14 @@ export default function OverviewPage() {
   } = usePersistentHistoryRange();
   const privacy = portfolio.privacyMode;
   const combinedHistory = useMemo(
-    () =>
-      buildPortfolioHistory(
+    () => {
+      const built = buildPortfolioHistory(
         portfolio.snapshots,
         portfolio.venueHistories ?? [],
         analytics.totalValue,
-      ),
+      );
+      return repairDisplayedCompositionSteps(built);
+    },
     [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories],
   );
   const history = useMemo(
@@ -91,13 +104,15 @@ export default function OverviewPage() {
     [combinedHistory, customRange, range],
   );
   const combinedPnlHistory = useMemo(
-    () =>
-      buildPortfolioPnlHistory(
-        portfolio.snapshots,
-        portfolio.venueHistories ?? [],
-        analytics.totalValue,
-      ),
-    [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories],
+    () => {
+      const baseline = combinedHistory[0]?.value;
+      if (combinedHistory.length < 2 || !Number.isFinite(baseline)) return [];
+      return combinedHistory.map((point) => ({
+        ...point,
+        value: point.value - Number(baseline),
+      }));
+    },
+    [combinedHistory],
   );
   const pnlHistory = useMemo(
     () => filterSnapshots(combinedPnlHistory, range, customRange),
@@ -111,9 +126,6 @@ export default function OverviewPage() {
     () => filterSnapshots(combinedDailyPnlHistory, range, customRange),
     [combinedDailyPnlHistory, customRange, range],
   );
-  const todayPnl = currentCalendarDayPnl(combinedDailyPnlHistory);
-  const openingEquity = analytics.totalValue - todayPnl;
-  const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historySources = useMemo(
     () => historySourceLabels(portfolio.venueHistories ?? []),
     [portfolio.venueHistories],
@@ -131,9 +143,21 @@ export default function OverviewPage() {
     () => analytics.assetData.slice(0, 5),
     [analytics.assetData],
   );
+  const sparklineAssetData = useMemo(() => {
+    const assets = new Map<
+      string,
+      (typeof analytics.assetData)[number]
+    >();
+    for (const asset of largestAssets) assets.set(asset.key, asset);
+    for (const asset of analytics.assetData) {
+      if (asset.instrumentType === 'crypto') assets.set(asset.key, asset);
+      if (assets.size >= 40) break;
+    }
+    return Array.from(assets.values()).slice(0, 40);
+  }, [analytics.assetData, largestAssets]);
   const sparklineAssets = useMemo(
     () =>
-      largestAssets.map((asset) => {
+      sparklineAssetData.map((asset) => {
         const matchingHoldings = analytics.holdings.filter(
           (holding) =>
             holding.symbol.toUpperCase() === asset.symbol &&
@@ -144,20 +168,32 @@ export default function OverviewPage() {
         const marketLinked = matchingHoldings.find(
           (holding) => holding.marketRef,
         );
+        const priced = matchingHoldings.find(
+          (holding) => Number(holding.price ?? holding.manualPrice) > 0,
+        );
         return {
           key: asset.key,
           symbol: asset.symbol,
           instrumentType: asset.instrumentType,
           coinId: identified?.coinId,
           marketRef: marketLinked?.marketRef,
+          currentPrice: priced?.price ?? priced?.manualPrice,
+          color: asset.color,
         };
       }),
-    [analytics.holdings, largestAssets],
+    [analytics.holdings, sparklineAssetData],
   );
   const sparklineRequestKey = JSON.stringify(sparklineAssets);
   const [sparklines, setSparklines] = useState<Record<string, SparklineSeries>>(
     {},
   );
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setUtcDayKey(utcCalendarDay(Date.now())),
+      60_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     const requestedAssets = JSON.parse(
       sparklineRequestKey,
@@ -182,7 +218,70 @@ export default function OverviewPage() {
           setSparklines({});
       });
     return () => controller.abort();
-  }, [sparklineRequestKey]);
+  }, [sparklineRequestKey, utcDayKey]);
+  const dailyCoinPnl = useMemo(() => {
+    const rows = sparklineAssets.flatMap((asset) => {
+      if (
+        asset.instrumentType !== 'crypto' ||
+        DAILY_PNL_STABLECOINS.has(asset.symbol.toUpperCase())
+      )
+        return [];
+      const series = sparklines[asset.key];
+      const dayOpen = Number(series?.utcDayOpen);
+      const canonicalPrice = Number(series?.points.at(-1));
+      if (!(dayOpen > 0) || !(canonicalPrice > 0)) return [];
+      const matching = analytics.holdings.filter(
+        (holding) =>
+          holding.instrumentType !== 'stock' &&
+          holding.symbol.toUpperCase() === asset.symbol.toUpperCase(),
+      );
+      const pnl = matching.reduce((sum, holding) => {
+        const direction =
+          holding.positionKind === 'perp' && holding.side === 'short' ? -1 : 1;
+        return sum +
+          direction * holding.amount * (canonicalPrice - dayOpen);
+      }, 0);
+      const latestPrice = canonicalPrice;
+      return [
+        {
+          key: asset.key,
+          symbol: asset.symbol,
+          pnl,
+          positive: Math.max(0, pnl),
+          negative: Math.min(0, pnl),
+          dayOpen,
+          latestPrice,
+          changePercent:
+            latestPrice > 0
+              ? (latestPrice / dayOpen - 1) * 100
+              : series.utcDayChangePercent,
+          positionCount: matching.length,
+          color: asset.color,
+        },
+      ];
+    });
+    const visible = [...rows]
+      .sort((left, right) => Math.abs(right.pnl) - Math.abs(left.pnl))
+      .slice(0, 10)
+      .sort((left, right) => right.pnl - left.pnl);
+    return {
+      rows: visible,
+      total: rows.reduce((sum, row) => sum + row.pnl, 0),
+      coverage: rows.length,
+      requested: sparklineAssets.filter(
+        (asset) =>
+          asset.instrumentType === 'crypto' &&
+          !DAILY_PNL_STABLECOINS.has(asset.symbol.toUpperCase()),
+      ).length,
+    };
+  }, [analytics.holdings, sparklines, sparklineAssets]);
+  const venueTodayPnl = currentUtcDayPnl(combinedDailyPnlHistory);
+  const todayPnl =
+    dailyCoinPnl.coverage === dailyCoinPnl.requested && dailyCoinPnl.coverage > 0
+      ? dailyCoinPnl.total
+      : venueTodayPnl;
+  const openingEquity = analytics.totalValue - todayPnl;
+  const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =
     range === 'CUSTOM' && customRange
       ? [customRange.start, customRange.end]
@@ -273,7 +372,7 @@ export default function OverviewPage() {
             </div>
             <p className="mt-3 text-[12px] text-muted-foreground">
               <Money value={todayPnl} privacy={privacy} signed /> today since
-              midnight · {analytics.cryptoSpot.length} crypto ·{' '}
+              00:00 UTC · {analytics.cryptoSpot.length} crypto ·{' '}
               {analytics.stocks.length} stocks · {analytics.perps.length}{' '}
               perpetual
             </p>
@@ -302,7 +401,7 @@ export default function OverviewPage() {
               <HeroMetric
                 label="Gross perp leverage"
                 value={`${analytics.effectiveLeverage.toFixed(2)}×`}
-                detail="Perp notional ÷ trading equity"
+                detail="Perp notional ÷ leverage equity"
               />
             </div>
             <div className="mt-6 rounded-xl border border-border bg-[var(--surface-subtle)] p-4 sm:p-5">
@@ -608,6 +707,103 @@ export default function OverviewPage() {
         </div>
       </Panel>
 
+      <Panel className="mt-3 overflow-hidden">
+        <PanelHeader
+          title="Top daily P&L coins"
+          description="Spot, staked, and perpetual positions combined by ticker · current quantities marked from each coin's 00:00 UTC price"
+          aside={
+            <div className="text-right">
+              <p className="text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
+                Crypto P&amp;L since 00:00 UTC
+              </p>
+              <p
+                className={`mt-1 font-mono text-[14px] font-bold ${dailyCoinPnl.total >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+              >
+                {dailyCoinPnl.coverage < dailyCoinPnl.requested
+                  ? `${dailyCoinPnl.coverage}/${dailyCoinPnl.requested} coins priced`
+                  : privacy
+                    ? '••••'
+                    : `${dailyCoinPnl.total > 0 ? '+' : ''}${formatMoney(dailyCoinPnl.total, true)}`}
+              </p>
+            </div>
+          }
+        />
+        <div className="p-4 sm:p-5">
+          {dailyCoinPnl.rows.length ? (
+            <ChartContainer
+              config={{
+                positive: { label: 'Gain', color: 'var(--positive)' },
+                negative: { label: 'Loss', color: 'var(--negative)' },
+              }}
+              className="h-[340px] w-full aspect-auto"
+            >
+              <BarChart
+                data={dailyCoinPnl.rows}
+                layout="vertical"
+                margin={{ left: 4, right: 24, top: 10, bottom: 4 }}
+              >
+                <CartesianGrid horizontal={false} stroke="var(--chart-grid)" />
+                <ReferenceLine
+                  x={0}
+                  stroke="var(--border)"
+                  strokeDasharray="4 4"
+                />
+                <XAxis
+                  type="number"
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(value) =>
+                    privacy ? '••' : formatCompactMoneyAxis(Number(value))
+                  }
+                  tick={{ fill: 'var(--chart-label)', fontSize: 11 }}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="symbol"
+                  axisLine={false}
+                  tickLine={false}
+                  width={64}
+                  tick={{
+                    fill: 'var(--foreground)',
+                    fontSize: 12,
+                    fontWeight: 650,
+                  }}
+                />
+                <Tooltip
+                  cursor={{ fill: 'var(--muted)', fillOpacity: 0.45 }}
+                  content={<DailyCoinPnlTooltip privacy={privacy} />}
+                />
+                <Bar
+                  dataKey="positive"
+                  stackId="daily-coin"
+                  fill="var(--positive)"
+                  fillOpacity={0.9}
+                  maxBarSize={30}
+                  radius={[5, 5, 5, 5]}
+                />
+                <Bar
+                  dataKey="negative"
+                  stackId="daily-coin"
+                  fill="var(--negative)"
+                  fillOpacity={0.9}
+                  maxBarSize={30}
+                  radius={[5, 5, 5, 5]}
+                />
+              </BarChart>
+            </ChartContainer>
+          ) : (
+            <HistoryEmptyState message="Daily coin attribution appears after market history resolves. Coin prices are measured from the 00:00 UTC candle boundary." />
+          )}
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            Showing the {Math.min(10, dailyCoinPnl.coverage)} largest of{' '}
+            {dailyCoinPnl.coverage} priced coin contributors by absolute P&amp;L.
+            Stablecoins are excluded. Staked balances are included; newly
+            earned reward tokens enter after the wallet is resynced. Quantity
+            changes made after midnight are applied to the full UTC-day move.
+          </p>
+        </div>
+      </Panel>
+
       <section className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={Activity}
@@ -649,7 +845,7 @@ export default function OverviewPage() {
                 : formatMoney(analytics.marginUsed)
               : 'No perps'
           }
-          detail={`${analytics.marginUtilization.toFixed(1)}% of trading equity · ${analytics.stopsCount}/${analytics.perps.length} protected`}
+          detail={`${analytics.marginUtilization.toFixed(1)}% of leverage equity · ${analytics.stopsCount}/${analytics.perps.length} protected`}
         />
         <MetricCard
           icon={Layers3}
@@ -711,7 +907,7 @@ export default function OverviewPage() {
                 Daily portfolio P&amp;L
               </p>
               <p className="mt-1 text-[10px] text-muted-foreground">
-                Calendar day · resets at 12:00 AM local time
+                Trading day · resets at 00:00 UTC
               </p>
             </div>
             <p
@@ -1017,6 +1213,11 @@ function formatMarketPrice(value: number) {
   }).format(value);
 }
 
+function utcCalendarDay(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+}
+
 function HeroMetric({
   label,
   value,
@@ -1111,6 +1312,54 @@ function DailyPnlTooltip({
   );
 }
 
+function DailyCoinPnlTooltip({
+  active,
+  payload,
+  privacy,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    payload?: {
+      symbol?: string;
+      pnl?: number;
+      dayOpen?: number;
+      latestPrice?: number;
+      changePercent?: number | null;
+      positionCount?: number;
+    };
+  }>;
+  privacy: boolean;
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  const pnl = Number(point?.pnl ?? 0);
+  const change = Number(point?.changePercent);
+  return (
+    <div className="rounded-lg border border-border bg-popover px-3 py-2 shadow-lg">
+      <p className="text-[11px] font-semibold text-foreground">
+        {point?.symbol} · UTC daily contribution
+      </p>
+      <p
+        className={`mt-1.5 font-mono text-[13px] font-bold ${pnl >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+      >
+        {privacy ? '••••' : `${pnl > 0 ? '+' : ''}${formatMoney(pnl)}`}
+      </p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        {Number.isFinite(change)
+          ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}% market move`
+          : 'Market move unavailable'}{' '}
+        · {point?.positionCount ?? 0} position
+        {point?.positionCount === 1 ? '' : 's'}
+      </p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        {privacy
+          ? '00:00 UTC •••• → now ••••'
+          : `00:00 UTC ${formatMarketPrice(Number(point?.dayOpen))} → now ${formatMarketPrice(Number(point?.latestPrice))}`}
+      </p>
+    </div>
+  );
+}
+
 function HistoryEmptyState({ message }: { message: string }) {
   return (
     <div className="grid h-[250px] place-items-center rounded-xl border border-dashed border-border bg-muted/30 px-6 text-center">
@@ -1124,6 +1373,27 @@ function HistoryEmptyState({ message }: { message: string }) {
       </div>
     </div>
   );
+}
+
+function repairDisplayedCompositionSteps<
+  T extends { timestamp: number; value: number },
+>(points: T[]) {
+  if (points.length < 2) return points;
+  const repaired = points.map((point) => ({ ...point }));
+  let earlierOffset = 0;
+  for (let index = points.length - 2; index >= 0; index -= 1) {
+    const point = points[index];
+    const next = points[index + 1];
+    const step = next.value - point.value;
+    const smallerLevel = Math.max(
+      100,
+      Math.min(Math.abs(point.value), Math.abs(next.value)),
+    );
+    if (Math.abs(step) >= 2_500 && Math.abs(step) / smallerLevel >= 0.75)
+      earlierOffset += step;
+    repaired[index].value = Math.max(0, point.value + earlierOffset);
+  }
+  return repaired;
 }
 
 function AllocationTooltip({

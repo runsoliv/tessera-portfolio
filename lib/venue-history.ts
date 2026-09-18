@@ -3,7 +3,10 @@ import type {
   VenueHistoryPoint,
   VenueHistorySeries,
 } from '@/lib/portfolio';
-import { repairTransientCompositionSpikes } from './history-utils.ts';
+import {
+  repairCompositionSteps,
+  repairTransientCompositionSpikes,
+} from './history-utils.ts';
 
 export const VENUE_HISTORY_VERSION = 3;
 
@@ -84,41 +87,49 @@ export function buildPortfolioHistory(
   currentValue: number,
 ): PortfolioHistoryPoint[] {
   const parsedHistories = parseVenueHistories(venueHistories);
-  const local = repairTransientCompositionSpikes(
+  const repairedLocal = repairTransientCompositionSpikes(
     cleanHistoryPoints(localSnapshots),
-  ).map((point) => ({
+  );
+  const latestSavedValue = repairedLocal.at(-1)?.value;
+  const current = Number.isFinite(currentValue) ? currentValue : 0;
+  // Snapshots are rebased whenever holdings are added or removed. Aligning the
+  // saved curve to its current endpoint also repairs older/incomplete imports
+  // that changed portfolio composition before that rebasing existed. This
+  // preserves every recorded P&L delta while preventing a wallet resync from
+  // appearing as a vertical gain or loss at the end of the chart.
+  const endpointOffset = Number.isFinite(latestSavedValue)
+    ? current - Number(latestSavedValue)
+    : 0;
+  const local = repairedLocal.map((point) => ({
     timestamp: point.timestamp,
-    value: point.value,
+    value: Math.max(0, point.value + endpointOffset),
     origin: 'local' as const,
     sources: ['Local snapshot'],
   }));
   const currentAnchor: PortfolioHistoryPoint = {
     timestamp: Date.now(),
-    value: Number.isFinite(currentValue) ? currentValue : 0,
+    value: current,
     origin: 'local',
     sources: ['Current portfolio'],
   };
   const localCurve = dedupeHistoryPoints([...local, currentAnchor]);
   const pnlCurve = buildVenuePnlHistory(parsedHistories);
   if (pnlCurve.length > 1) {
-    const firstLocal = localCurve[0];
-    const pnlAtLocalStart = valueAt(pnlCurve, firstLocal.timestamp);
-    const venueBackfill = pnlCurve
-      .filter((point) => point.timestamp < firstLocal.timestamp)
-      .map((point) => ({
-        ...point,
-        value: Math.max(0, firstLocal.value + point.value - pnlAtLocalStart),
-        sources: point.sources.map((source) => `${source} P&L`),
-      }));
-    return repairTransientCompositionSpikes(
-      dedupeHistoryPoints([...venueBackfill, ...localCurve]),
+    const latestPnl = pnlCurve.at(-1)?.value ?? 0;
+    const venueBackfill = pnlCurve.map((point) => ({
+      ...point,
+      value: Math.max(0, current + point.value - latestPnl),
+      sources: point.sources.map((source) => `${source} P&L`),
+    }));
+    return repairCompositionSteps(
+      dedupeHistoryPoints([...venueBackfill, currentAnchor]),
     );
   }
 
   const histories = parsedHistories.filter(
     (series) => series.points.length > 1,
   );
-  if (!histories.length) return repairTransientCompositionSpikes(localCurve);
+  if (!histories.length) return repairCompositionSteps(localCurve);
 
   const anchor = localCurve[0];
   const sourceAtAnchor = histories.reduce(
@@ -152,7 +163,7 @@ export function buildPortfolioHistory(
     };
   });
 
-  return repairTransientCompositionSpikes(
+  return repairCompositionSteps(
     dedupeHistoryPoints([...backfill, ...localCurve]),
   );
 }
@@ -183,7 +194,7 @@ export function buildDailyPortfolioPnlHistory(
   const days = new Map<string, PortfolioHistoryPoint>();
   for (const point of ordered) {
     const date = new Date(point.timestamp);
-    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
     days.set(key, point);
   }
 
@@ -202,7 +213,7 @@ export function buildDailyPortfolioPnlHistory(
   });
 }
 
-export function currentCalendarDayPnl(
+export function currentUtcDayPnl(
   dailyHistory: DailyPortfolioPnlPoint[],
   now = Date.now(),
 ) {
@@ -210,9 +221,9 @@ export function currentCalendarDayPnl(
   if (!latest) return 0;
   const currentDate = new Date(now);
   const latestDate = new Date(latest.timestamp);
-  return currentDate.getFullYear() === latestDate.getFullYear() &&
-    currentDate.getMonth() === latestDate.getMonth() &&
-    currentDate.getDate() === latestDate.getDate()
+  return currentDate.getUTCFullYear() === latestDate.getUTCFullYear() &&
+    currentDate.getUTCMonth() === latestDate.getUTCMonth() &&
+    currentDate.getUTCDate() === latestDate.getUTCDate()
     ? latest.value
     : 0;
 }

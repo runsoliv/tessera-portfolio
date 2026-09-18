@@ -1,7 +1,52 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { reconcileVenueEquity } from '../lib/venue-equity.ts';
+import {
+  reconcileVenueEquity,
+  usableVenuePositionEquity,
+} from '../lib/venue-equity.ts';
+
+void test('uses signed open P&L as usable Lighter and Hyperliquid equity', () => {
+  const margin = 631.94;
+  const unrealizedPnl = 765.58;
+  const notional = 5_152.93;
+
+  for (const importedFrom of ['lighter', 'hyperliquid']) {
+    const equity = usableVenuePositionEquity({
+      importedFrom,
+      margin,
+      unrealizedPnl,
+      reportedEquity: margin,
+    });
+    assert.equal(equity, 1_397.52);
+    assert.equal(Number((notional / equity).toFixed(2)), 3.69);
+  }
+});
+
+void test('keeps venue portfolio value separate from the leverage denominator', () => {
+  const margins = [331.4, 270.27, 123.28];
+  const openPnl = [334.4, 405.85, 52.52];
+  const account = reconcileVenueEquity(1_165.04, 440.09, margins);
+  const portfolioValue =
+    account.availableEquity +
+    account.positionEquities.reduce((sum, value) => sum + value, 0);
+  const leverageEquity = margins.reduce(
+    (sum, margin, index) =>
+      sum +
+      usableVenuePositionEquity({
+        importedFrom: 'lighter',
+        margin,
+        unrealizedPnl: openPnl[index],
+        reportedEquity: account.positionEquities[index],
+      }),
+    0,
+  );
+
+  assert.equal(Number(portfolioValue.toFixed(2)), 1_165.04);
+  assert.equal(Number(leverageEquity.toFixed(2)), 1_517.72);
+  assert.notEqual(portfolioValue, leverageEquity);
+  assert.equal(Number((5_177.24 / leverageEquity).toFixed(2)), 3.41);
+});
 
 void test('includes usable unrealized profit in account leverage exactly once', () => {
   const notional = 5_126.05;

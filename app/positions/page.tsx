@@ -262,13 +262,13 @@ export default function PositionsPage() {
                   const perp = holding.positionKind === 'perp';
                   const allTimePnl = perp
                     ? holding.unrealizedPnl
-                    : (holding.stakingRewardsValue ?? holding.unrealizedPnl);
+                    : (holding.unrealizedPnl ?? holding.stakingRewardsValue);
                   const allTimeLabel = perp
                     ? 'Live unrealized P&L'
-                    : holding.stakingRewardsValue != null
-                      ? `All-time staking rewards · ${formatNumber(Number(holding.stakingRewardsAmount ?? 0))} ${holding.symbol}`
-                      : holding.unrealizedPnl != null
-                        ? 'All-time cost-basis P&L'
+                    : holding.unrealizedPnl != null
+                      ? 'All-time cost-basis P&L'
+                      : holding.stakingRewardsValue != null
+                        ? `Staking rewards only · ${formatNumber(Number(holding.stakingRewardsAmount ?? 0))} ${holding.symbol} · excludes price return`
                         : 'All-time unavailable';
                   const linkedProfiles = importProfileIdsForHolding(holding)
                     .map((profileId) => profileNames.get(profileId))

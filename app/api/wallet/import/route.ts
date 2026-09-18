@@ -1186,9 +1186,16 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       market,
     ]),
   );
+  const lighterTokenPrice = positiveNumber(
+    (marketDetails.order_book_details ?? []).find((market) =>
+      String(market.symbol ?? '')
+        .toUpperCase()
+        .trim() === 'LIT',
+    )?.mark_price,
+  );
   const stakingBalances = new Map<
     number,
-    { amount: number; principal: number }
+    { amount: number; principal: number; entryUsdc: number }
   >();
   let pendingLighter = 0;
   let availableUsdc = 0;
@@ -1249,14 +1256,14 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       const pool = stakingPools.public_pools?.find(
         (item) => Number(item.account_index) === poolIndex,
       );
-      if (!pool) continue;
-      const totalShares = Number(pool.total_shares);
+      const totalShares = Number(pool?.total_shares);
       const shares = Number(share.shares_amount);
-      const stakedAsset = pool.assets?.find(
+      const stakedAsset = pool?.assets?.find(
         (asset) => cleanSymbol(asset.symbol) === 'LIT',
       );
       const poolLit = Number(stakedAsset?.balance);
       const principal = Number(share.principal_amount);
+      const entryUsdc = Number(share.entry_usdc);
       const amount =
         totalShares > 0 && shares > 0 && poolLit > 0
           ? (shares / totalShares) * poolLit
@@ -1268,6 +1275,9 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
           principal:
             (current?.principal ?? 0) +
             (Number.isFinite(principal) && principal > 0 ? principal : 0),
+          entryUsdc:
+            (current?.entryUsdc ?? 0) +
+            (Number.isFinite(entryUsdc) && entryUsdc > 0 ? entryUsdc : 0),
         });
       }
     }
@@ -1383,6 +1393,12 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       provider: 'Lighter staking snapshot',
       coinId: 'lighter',
       collateralEligible: false,
+      price: lighterTokenPrice,
+      estimatedValue: lighterTokenPrice
+        ? balance.amount * lighterTokenPrice
+        : undefined,
+      costBasis:
+        balance.entryUsdc > 0 ? balance.entryUsdc / balance.amount : undefined,
       stakingPrincipalAmount:
         balance.principal > 0 ? balance.principal : undefined,
       stakingRewardsAmount:
@@ -1404,6 +1420,10 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       provider: 'Lighter staking snapshot',
       coinId: 'lighter',
       collateralEligible: false,
+      price: lighterTokenPrice,
+      estimatedValue: lighterTokenPrice
+        ? pendingLighter * lighterTokenPrice
+        : undefined,
     });
   }
 
@@ -1689,6 +1709,8 @@ type LighterAccount = {
     public_pool_index?: number;
     shares_amount?: number;
     principal_amount?: string;
+    entry_usdc?: string;
+    entry_timestamp?: number;
   }>;
   pending_unlocks?: Array<{
     asset_index?: number;

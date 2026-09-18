@@ -4,6 +4,26 @@ export type VenueEquityReconciliation = {
   positionEquities: number[];
 };
 
+export function usableVenuePositionEquity({
+  importedFrom,
+  margin,
+  unrealizedPnl,
+  reportedEquity,
+}: {
+  importedFrom?: string;
+  margin: number;
+  unrealizedPnl: number;
+  reportedEquity: number;
+}) {
+  const venuePosition =
+    importedFrom === 'lighter' || importedFrom === 'hyperliquid';
+  if (venuePosition && Number.isFinite(unrealizedPnl))
+    return Math.max(0, margin + unrealizedPnl);
+  if (Number.isFinite(reportedEquity) && reportedEquity >= 0)
+    return reportedEquity;
+  return Math.max(0, margin + unrealizedPnl);
+}
+
 /**
  * Allocates a venue-reported account equity total without manufacturing or
  * double-counting unrealized P&L.

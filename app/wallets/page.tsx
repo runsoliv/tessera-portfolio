@@ -79,6 +79,7 @@ export default function WalletsPage() {
     openScreenshotImport,
     renameImportProfile,
     removeImportProfile,
+    syncImportProfile,
   } = usePortfolio();
   const [source, setSource] = useState<WalletImportSource>('onchain');
   const [network, setNetwork] = useState('ethereum');
@@ -92,6 +93,7 @@ export default function WalletsPage() {
   const [removingProfileId, setRemovingProfileId] = useState<string | null>(
     null,
   );
+  const [syncingProfileId, setSyncingProfileId] = useState<string | null>(null);
 
   const profileSummaries = useMemo(
     () =>
@@ -200,7 +202,12 @@ export default function WalletsPage() {
 
   function importSelected() {
     if (!result || !selectedItems.length) return;
-    mergeWalletPositions(selectedItems, result.source, result.address);
+    mergeWalletPositions(
+      selectedItems,
+      result.source,
+      result.address,
+      result.warnings,
+    );
     router.push('/positions');
   }
 
@@ -263,6 +270,7 @@ export default function WalletsPage() {
                 privacy={portfolio.privacyMode}
                 editing={editingProfileId === profile.id}
                 removing={removingProfileId === profile.id}
+                syncing={syncingProfileId === profile.id}
                 draftName={profileName}
                 onDraftNameChange={setProfileName}
                 onStartEdit={() => {
@@ -274,6 +282,11 @@ export default function WalletsPage() {
                 onSaveEdit={() => {
                   renameImportProfile(profile.id, profileName);
                   setEditingProfileId(null);
+                }}
+                onSync={async () => {
+                  setSyncingProfileId(profile.id);
+                  await syncImportProfile(profile.id);
+                  setSyncingProfileId(null);
                 }}
                 onStartRemove={() => {
                   setRemovingProfileId(profile.id);
@@ -533,11 +546,13 @@ function ImportProfileCard({
   privacy,
   editing,
   removing,
+  syncing,
   draftName,
   onDraftNameChange,
   onStartEdit,
   onCancelEdit,
   onSaveEdit,
+  onSync,
   onStartRemove,
   onCancelRemove,
   onConfirmRemove,
@@ -546,11 +561,13 @@ function ImportProfileCard({
   privacy: boolean;
   editing: boolean;
   removing: boolean;
+  syncing: boolean;
   draftName: string;
   onDraftNameChange: (value: string) => void;
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onSaveEdit: () => void;
+  onSync: () => Promise<void>;
   onStartRemove: () => void;
   onCancelRemove: () => void;
   onConfirmRemove: () => void;
@@ -623,6 +640,21 @@ function ImportProfileCard({
                 </p>
               </div>
               <div className="flex shrink-0">
+                {(profile.source === 'hyperliquid' ||
+                  profile.source === 'lighter') && (
+                  <button
+                    type="button"
+                    onClick={() => void onSync()}
+                    disabled={syncing}
+                    aria-label={`Sync ${profile.name}`}
+                    title="Sync wallet snapshot"
+                    className="grid size-7 place-items-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`size-3 ${syncing ? 'animate-spin' : ''}`}
+                    />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onStartEdit}

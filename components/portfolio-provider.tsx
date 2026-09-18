@@ -37,6 +37,7 @@ import {
   parseImportProfiles,
   removeImportProfileFromHoldings,
   retainImportProfileHoldings,
+  WALLET_SNAPSHOT_VERSION,
 } from '@/lib/import-profiles';
 import {
   COLORS,
@@ -58,6 +59,7 @@ import {
 import type {
   QuantityAdjustment,
   WalletImportCandidate,
+  WalletImportResponse,
   WalletHistoryResponse,
   WalletImportSource,
 } from '@/lib/wallet-import';
@@ -78,6 +80,7 @@ type PortfolioContextValue = {
   importProfiles: ImportProfile[];
   refreshPrices: (holdings?: Holding[]) => Promise<void>;
   refreshVenueHistories: (force?: boolean) => Promise<void>;
+  syncImportProfile: (profileId: string) => Promise<void>;
   openAdd: (positionType?: 'spot' | 'perp') => void;
   openEdit: (holding: Holding) => void;
   openAdjust: (holding: Holding) => void;
@@ -89,6 +92,7 @@ type PortfolioContextValue = {
     items: WalletImportCandidate[],
     source: WalletImportSource,
     address: string,
+    warnings?: string[],
   ) => { added: number; merged: number };
   updateHolding: (id: string, patch: Partial<Holding>) => void;
   setPrivacyMode: (value: boolean) => void;
@@ -403,10 +407,113 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const syncImportProfile = useCallback(
+    async (profileId: string, announce = true) => {
+      const profile = importProfilesRef.current.find(
+        (candidate) => candidate.id === profileId,
+      );
+      const current = portfolioRef.current;
+      if (
+        !profile ||
+        !current ||
+        !profile.address ||
+        (profile.source !== 'hyperliquid' && profile.source !== 'lighter')
+      )
+        return;
+
+      try {
+        const response = await fetch('/api/wallet/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: profile.source,
+            address: profile.address,
+          }),
+        });
+        const data = (await response.json()) as WalletImportResponse & {
+          error?: string;
+        };
+        if (!response.ok)
+          throw new Error(
+            data.error || `${profile.name} could not be synchronized.`,
+          );
+
+        const nextHoldings = replaceWalletProfileSnapshot(
+          current.holdings,
+          data.items,
+          profile.source,
+          profile.address,
+          profile.id,
+          data.warnings,
+        );
+        const incompleteKinds = incompleteWalletSnapshotKinds(
+          profile.source,
+          data.warnings,
+        );
+        const nextProfiles = importProfilesRef.current.map((candidate) =>
+          candidate.id === profile.id
+            ? {
+                ...candidate,
+                lastImportedAt: data.fetchedAt,
+                snapshotVersion: incompleteKinds.size
+                  ? candidate.snapshotVersion
+                  : WALLET_SNAPSHOT_VERSION,
+              }
+            : candidate,
+        );
+        importProfilesRef.current = nextProfiles;
+        setImportProfiles(nextProfiles);
+        const nextPortfolio = {
+          ...portfolioWithRebasedHoldings(current, nextHoldings),
+          sampleMode: false,
+        };
+        portfolioRef.current = nextPortfolio;
+        setPortfolio(nextPortfolio);
+        window.setTimeout(() => void refreshPrices(nextHoldings, true), 0);
+        window.setTimeout(
+          () => void refreshVenueHistories(true, nextProfiles, false),
+          0,
+        );
+        if (announce)
+          setNotice(
+            `${profile.name} synchronized from ${profile.platform}. Quantities will remain fixed until you sync again.`,
+          );
+      } catch (error) {
+        if (announce)
+          setNotice(
+            error instanceof Error
+              ? error.message
+              : `${profile.name} could not be synchronized.`,
+          );
+      }
+    },
+    [refreshPrices, refreshVenueHistories],
+  );
+
   useEffect(() => {
     if (!hydrated || !portfolioRef.current?.holdings.length) return;
     void refreshPrices();
   }, [hydrated, refreshPrices]);
+
+  const attemptedWalletSnapshotUpgrade = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      attemptedWalletSnapshotUpgrade.current === WALLET_SNAPSHOT_VERSION ||
+      !hydrated
+    )
+      return;
+    const legacyProfiles = importProfilesRef.current.filter(
+      (profile) =>
+        (profile.source === 'lighter' || profile.source === 'hyperliquid') &&
+        profile.address &&
+        profile.snapshotVersion !== WALLET_SNAPSHOT_VERSION,
+    );
+    attemptedWalletSnapshotUpgrade.current = WALLET_SNAPSHOT_VERSION;
+    void (async () => {
+      for (const profile of legacyProfiles)
+        await syncImportProfile(profile.id, false);
+    })();
+  });
 
   useEffect(() => {
     if (!hydrated || !portfolio?.autoRefresh) return;
@@ -459,6 +566,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     items: WalletImportCandidate[],
     source: WalletImportSource,
     address: string,
+    warnings: string[] = [],
   ) {
     const current = portfolioRef.current;
     if (!current || !items.length) return { added: 0, merged: 0 };
@@ -470,8 +578,49 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       network: items[0]?.network,
       platform,
     });
-    importProfilesRef.current = profileResult.profiles;
-    setImportProfiles(profileResult.profiles);
+    const incompleteKinds = incompleteWalletSnapshotKinds(source, warnings);
+    const nextProfiles = profileResult.profiles.map((profile) =>
+      profile.id === profileResult.profile.id
+        ? {
+            ...profile,
+            snapshotVersion: incompleteKinds.size
+              ? profile.snapshotVersion
+              : WALLET_SNAPSHOT_VERSION,
+          }
+        : profile,
+    );
+    importProfilesRef.current = nextProfiles;
+    setImportProfiles(nextProfiles);
+    if (!profileResult.created) {
+      const matched = items.filter((candidate) =>
+        current.holdings.some((holding) =>
+          matchesImport(holding, candidate, profileResult.profile.id),
+        ),
+      ).length;
+      const nextHoldings = replaceWalletProfileSnapshot(
+        current.holdings,
+        items,
+        source,
+        address,
+        profileResult.profile.id,
+        warnings,
+      );
+      const nextPortfolio = {
+        ...portfolioWithRebasedHoldings(current, nextHoldings),
+        sampleMode: false,
+      };
+      portfolioRef.current = nextPortfolio;
+      setPortfolio(nextPortfolio);
+      setNotice(
+        `${profileResult.profile.name} snapshot updated: ${items.length - matched} new, ${matched} refreshed. Quantities stay fixed until the next sync.`,
+      );
+      window.setTimeout(() => void refreshPrices(nextHoldings, true), 0);
+      window.setTimeout(
+        () => void refreshVenueHistories(true, nextProfiles, false),
+        0,
+      );
+      return { added: items.length - matched, merged: matched };
+    }
     const nextHoldings = [...current.holdings];
     let added = 0;
     let merged = 0;
@@ -510,7 +659,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     );
     window.setTimeout(() => void refreshPrices(nextHoldings, true), 0);
     window.setTimeout(
-      () => void refreshVenueHistories(true, [profileResult.profile], false),
+      () => void refreshVenueHistories(true, nextProfiles, false),
       0,
     );
     return { added, merged };
@@ -834,6 +983,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     importProfiles,
     refreshPrices,
     refreshVenueHistories,
+    syncImportProfile,
     openAdd: (positionType = 'spot') => {
       setEditing(null);
       setDefaultPositionType(positionType);
@@ -1264,11 +1414,139 @@ function candidateToHolding(
     importedFrom: source,
     importProfileId,
     walletAddress: address,
+    walletSnapshotAmount: candidate.amount,
     importedAt: Date.now(),
     marketRef: candidate.marketRef,
     accountMode: candidate.accountMode,
     color: COLORS[colorIndex % COLORS.length],
   };
+}
+
+function replaceWalletProfileSnapshot(
+  holdings: Holding[],
+  candidates: WalletImportCandidate[],
+  source: WalletImportSource,
+  address: string,
+  importProfileId: string,
+  warnings: string[] = [],
+) {
+  const existing = holdings.filter(
+    (holding) => holding.importProfileId === importProfileId,
+  );
+  const incompleteKinds = incompleteWalletSnapshotKinds(source, warnings);
+  const matchedIds = new Set<string>();
+  const refreshed = candidates.flatMap((candidate, index) => {
+    const match = existing.find(
+      (holding) =>
+        !matchedIds.has(holding.id) &&
+        matchesImport(holding, candidate, importProfileId),
+    );
+    const next = candidateToHolding(
+      candidate,
+      source,
+      address,
+      importProfileId,
+      holdings.length + index,
+    );
+    if (!match) return [next];
+    matchedIds.add(match.id);
+    if (incompleteKinds.has(walletSnapshotKind(next))) return [match];
+    const previousSnapshotAmount = Number(match.walletSnapshotAmount);
+    const manualDelta = Number.isFinite(previousSnapshotAmount)
+      ? match.amount - previousSnapshotAmount
+      : 0;
+    const amount = Math.max(0, candidate.amount + manualDelta);
+    if (!(amount > 0)) return [];
+    return [
+      {
+        ...next,
+        id: match.id,
+        amount,
+        color: match.color,
+        price: next.price ?? match.price,
+        manualPrice: next.manualPrice ?? match.manualPrice,
+        change24h: next.change24h ?? match.change24h,
+        marketCap: next.marketCap ?? match.marketCap,
+        volume24h: next.volume24h ?? match.volume24h,
+        liquidity: next.liquidity ?? match.liquidity,
+        updatedAt: next.price != null ? next.updatedAt : match.updatedAt,
+        costBasis: next.costBasis ?? match.costBasis,
+        targetPrice: match.targetPrice,
+        stopLossPrice: match.stopLossPrice,
+      },
+    ];
+  });
+  const preservedIncomplete = existing.filter(
+    (holding) =>
+      !matchedIds.has(holding.id) &&
+      incompleteKinds.has(walletSnapshotKind(holding)),
+  );
+  const preservedIds = new Set(
+    preservedIncomplete.map((holding) => holding.id),
+  );
+  const retainedManualDeltas = existing.flatMap((holding) => {
+    if (matchedIds.has(holding.id)) return [];
+    if (preservedIds.has(holding.id)) return [];
+    const previousSnapshotAmount = Number(holding.walletSnapshotAmount);
+    if (!Number.isFinite(previousSnapshotAmount)) return [];
+    const amount = holding.amount - previousSnapshotAmount;
+    if (!(amount > 0)) return [];
+    return [
+      normalizeHolding({
+        ...holding,
+        amount,
+        walletSnapshotAmount: 0,
+        equityOverride: undefined,
+        equityMarkPrice: undefined,
+        reportedRoe: undefined,
+        reportedUnrealizedPnl: undefined,
+        liquidationModel:
+          holding.positionType === 'perp' ? 'estimate' : undefined,
+        reportedLiquidationPrice: undefined,
+      }),
+    ];
+  });
+  return [
+    ...holdings.filter(
+      (holding) => holding.importProfileId !== importProfileId,
+    ),
+    ...refreshed,
+    ...preservedIncomplete,
+    ...retainedManualDeltas,
+  ];
+}
+
+type WalletSnapshotKind = 'perp' | 'spot' | 'staking';
+
+function walletSnapshotKind(holding: Holding): WalletSnapshotKind {
+  if (holding.positionType === 'perp') return 'perp';
+  if (
+    holding.assetClass === 'staked' ||
+    holding.assetClass === 'staking' ||
+    holding.assetClass === 'unstaking'
+  )
+    return 'staking';
+  return 'spot';
+}
+
+function incompleteWalletSnapshotKinds(
+  source: WalletImportSource,
+  warnings: string[] = [],
+) {
+  const kinds = new Set<WalletSnapshotKind>();
+  const normalized = warnings.join(' ').toLowerCase();
+  if (
+    normalized.includes('staking metadata was unavailable') ||
+    normalized.includes('staked hype balances could not be read')
+  )
+    kinds.add('staking');
+  if (source === 'hyperliquid') {
+    if (normalized.includes('perpetual positions could not be read'))
+      kinds.add('perp');
+    if (normalized.includes('spot balances could not be read'))
+      kinds.add('spot');
+  }
+  return kinds;
 }
 
 function matchesImport(

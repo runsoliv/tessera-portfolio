@@ -70,7 +70,7 @@ Whole-portfolio P&L uses transfer-adjusted local snapshots, so adding, removing,
 ## Perpetual accounting
 
 - **Account leverage** is gross or signed net perpetual notional divided by current usable trading equity.
-- Lighter trading equity reconciles to `total_asset_value`; Hyperliquid perp equity reconciles to `marginSummary.accountValue`. These venue totals already include unrealized P&L, so P&L is counted once rather than added twice.
+- Portfolio totals reconcile Lighter and Hyperliquid positions to their venue-reported account equity, including free collateral exactly once. Account leverage uses a separate denominator—position margin plus signed open P&L—so changing the leverage model cannot inflate portfolio value. Staking reward-token growth is shown separately from total staked-asset P&L, which requires a cost basis.
 - **Margin used** remains the venue-reported or initial-margin requirement. It is not treated as the account's full equity.
 - Staked and unstaking balances are excluded from every margin and account-leverage denominator.
 

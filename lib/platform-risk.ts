@@ -16,9 +16,18 @@ export type PlatformRiskSummary = {
   liquidSpotValue: number;
   stakedValue: number;
   stakingRewardsValue: number;
+  stakingRewardsQuantity: number;
+  stakingRewardBreakdown: Array<{
+    symbol: string;
+    quantity: number;
+    value: number;
+  }>;
   stakingRewardsKnownCount: number;
+  stakedPnl: number;
+  stakedPnlKnownCount: number;
   perpEquity: number;
   tradingEquity: number;
+  leverageEquity: number;
   perpNotional: number;
   longNotional: number;
   shortNotional: number;
@@ -105,13 +114,47 @@ function calculatePlatformRisk(
     (sum, holding) => sum + Number(holding.stakingRewardsValue ?? 0),
     0,
   );
+  const stakingRewardsQuantity = staked.reduce(
+    (sum, holding) => sum + Number(holding.stakingRewardsQuantity ?? 0),
+    0,
+  );
+  const stakingRewardMap = new Map<
+    string,
+    { symbol: string; quantity: number; value: number }
+  >();
+  for (const holding of staked) {
+    if (holding.stakingRewardsQuantity == null) continue;
+    const symbol = holding.symbol.toUpperCase();
+    const current = stakingRewardMap.get(symbol) ?? {
+      symbol,
+      quantity: 0,
+      value: 0,
+    };
+    current.quantity += holding.stakingRewardsQuantity;
+    current.value += Number(holding.stakingRewardsValue ?? 0);
+    stakingRewardMap.set(symbol, current);
+  }
+  const stakingRewardBreakdown = Array.from(stakingRewardMap.values()).sort(
+    (left, right) => right.value - left.value,
+  );
   const stakingRewardsKnownCount = staked.filter(
     (holding) => holding.stakingRewardsValue != null,
   ).length;
+  const stakedWithPnl = staked.filter(
+    (holding) => holding.unrealizedPnl != null,
+  );
+  const stakedPnl = stakedWithPnl.reduce(
+    (sum, holding) => sum + Number(holding.unrealizedPnl),
+    0,
+  );
   const perpEquity = perps.reduce((sum, holding) => sum + holding.value, 0);
   const tradingEquity =
     collateralSpot.reduce((sum, holding) => sum + holding.value, 0) +
     perpEquity;
+  const leverageEquity = perps.reduce(
+    (sum, holding) => sum + holding.leverageEquity,
+    0,
+  );
   const perpNotional = perps.reduce(
     (sum, holding) => sum + holding.notional,
     0,
@@ -152,25 +195,28 @@ function calculatePlatformRisk(
       ) / liquidationWeight
     : null;
   const marginUtilization =
-    tradingEquity > 0
-      ? (marginUsed / tradingEquity) * 100
+    leverageEquity > 0
+      ? (marginUsed / leverageEquity) * 100
       : perps.length
         ? 100
         : 0;
   const maintenanceRatio =
-    tradingEquity > 0
-      ? (maintenanceRequirement / tradingEquity) * 100
+    leverageEquity > 0
+      ? (maintenanceRequirement / leverageEquity) * 100
       : perps.length
         ? 100
         : 0;
   const grossLeverage =
-    tradingEquity > 0 ? perpNotional / tradingEquity : perps.length ? 100 : 0;
-  const netLeverage = tradingEquity > 0 ? netPerpNotional / tradingEquity : 0;
+    leverageEquity > 0 ? perpNotional / leverageEquity : perps.length ? 100 : 0;
+  const netLeverage =
+    leverageEquity > 0 ? netPerpNotional / leverageEquity : 0;
   const perpUnrealizedPnl = perps.reduce(
     (sum, holding) => sum + Number(holding.unrealizedPnl ?? 0),
     0,
   );
-  const spotWithPnl = spot.filter((holding) => holding.unrealizedPnl != null);
+  const spotWithPnl = liquidSpot.filter(
+    (holding) => holding.unrealizedPnl != null,
+  );
   const knownSpotPnl = spotWithPnl.reduce(
     (sum, holding) => sum + Number(holding.unrealizedPnl),
     0,
@@ -211,8 +257,7 @@ function calculatePlatformRisk(
   );
   const stressDelta = spotDelta + perpDelta;
   const stressedEquity = equity + stressDelta;
-  const stressedTradingEquity =
-    tradingEquity + liquidSpotValue * move + perpDelta;
+  const stressedTradingEquity = leverageEquity + perpDelta;
   const shockedLiquidations = perps.filter((holding) => {
     const mark = Number(holding.price ?? holding.manualPrice ?? 0);
     const liquidation = Number(holding.liquidationPrice);
@@ -232,9 +277,14 @@ function calculatePlatformRisk(
     liquidSpotValue,
     stakedValue,
     stakingRewardsValue,
+    stakingRewardsQuantity,
+    stakingRewardBreakdown,
     stakingRewardsKnownCount,
+    stakedPnl,
+    stakedPnlKnownCount: stakedWithPnl.length,
     perpEquity,
     tradingEquity,
+    leverageEquity,
     perpNotional,
     longNotional,
     shortNotional,
@@ -242,9 +292,9 @@ function calculatePlatformRisk(
     grossExposure: spotValue + perpNotional,
     netExposure: spotValue + netPerpNotional,
     marginUsed,
-    availableTradingEquity: Math.max(0, tradingEquity - marginUsed),
+    availableTradingEquity: Math.max(0, leverageEquity - marginUsed),
     maintenanceRequirement,
-    maintenanceBuffer: tradingEquity - maintenanceRequirement,
+    maintenanceBuffer: leverageEquity - maintenanceRequirement,
     maintenanceRatio,
     marginUtilization,
     effectiveLeverage: grossLeverage,
@@ -259,7 +309,7 @@ function calculatePlatformRisk(
     perpUnrealizedPnl,
     knownSpotPnl,
     knownSpotPnlCount: spotWithPnl.length,
-    livePnl: perpUnrealizedPnl + knownSpotPnl,
+    livePnl: perpUnrealizedPnl + knownSpotPnl + stakedPnl,
     dayPnl,
     returnOnMargin: marginUsed ? (perpUnrealizedPnl / marginUsed) * 100 : null,
     longCount: perps.filter((holding) => holding.side !== 'short').length,

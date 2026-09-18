@@ -22,6 +22,7 @@ export type ImportProfile = {
   network?: string;
   createdAt: number;
   lastImportedAt: number;
+  snapshotVersion?: number;
 };
 
 export type ImportContribution = {
@@ -69,6 +70,7 @@ export type Holding = {
   importProfileId?: string;
   importContributions?: ImportContribution[];
   walletAddress?: string;
+  walletSnapshotAmount?: number;
   importedAt?: number;
   marketRef?: string;
   accountMode?: string;
