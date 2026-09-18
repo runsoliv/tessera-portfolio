@@ -89,31 +89,26 @@ export default function OverviewPage() {
   } = usePersistentHistoryRange();
   const privacy = portfolio.privacyMode;
   const combinedHistory = useMemo(
-    () => {
-      const built = buildPortfolioHistory(
+    () =>
+      buildPortfolioHistory(
         portfolio.snapshots,
         portfolio.venueHistories ?? [],
         analytics.totalValue,
-      );
-      return repairDisplayedCompositionSteps(built);
-    },
+      ),
     [analytics.totalValue, portfolio.snapshots, portfolio.venueHistories],
   );
   const history = useMemo(
     () => filterSnapshots(combinedHistory, range, customRange),
     [combinedHistory, customRange, range],
   );
-  const combinedPnlHistory = useMemo(
-    () => {
-      const baseline = combinedHistory[0]?.value;
-      if (combinedHistory.length < 2 || !Number.isFinite(baseline)) return [];
-      return combinedHistory.map((point) => ({
-        ...point,
-        value: point.value - Number(baseline),
-      }));
-    },
-    [combinedHistory],
-  );
+  const combinedPnlHistory = useMemo(() => {
+    const baseline = combinedHistory[0]?.value;
+    if (combinedHistory.length < 2 || !Number.isFinite(baseline)) return [];
+    return combinedHistory.map((point) => ({
+      ...point,
+      value: point.value - Number(baseline),
+    }));
+  }, [combinedHistory]);
   const pnlHistory = useMemo(
     () => filterSnapshots(combinedPnlHistory, range, customRange),
     [combinedPnlHistory, customRange, range],
@@ -144,10 +139,7 @@ export default function OverviewPage() {
     [analytics.assetData],
   );
   const sparklineAssetData = useMemo(() => {
-    const assets = new Map<
-      string,
-      (typeof analytics.assetData)[number]
-    >();
+    const assets = new Map<string, (typeof analytics.assetData)[number]>();
     for (const asset of largestAssets) assets.set(asset.key, asset);
     for (const asset of analytics.assetData) {
       if (asset.instrumentType === 'crypto') assets.set(asset.key, asset);
@@ -238,8 +230,7 @@ export default function OverviewPage() {
       const pnl = matching.reduce((sum, holding) => {
         const direction =
           holding.positionKind === 'perp' && holding.side === 'short' ? -1 : 1;
-        return sum +
-          direction * holding.amount * (canonicalPrice - dayOpen);
+        return sum + direction * holding.amount * (canonicalPrice - dayOpen);
       }, 0);
       const latestPrice = canonicalPrice;
       return [
@@ -276,10 +267,7 @@ export default function OverviewPage() {
     };
   }, [analytics.holdings, sparklines, sparklineAssets]);
   const venueTodayPnl = currentUtcDayPnl(combinedDailyPnlHistory);
-  const todayPnl =
-    dailyCoinPnl.coverage === dailyCoinPnl.requested && dailyCoinPnl.coverage > 0
-      ? dailyCoinPnl.total
-      : venueTodayPnl;
+  const todayPnl = venueTodayPnl;
   const openingEquity = analytics.totalValue - todayPnl;
   const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =
@@ -796,10 +784,11 @@ export default function OverviewPage() {
           )}
           <p className="mt-2 text-[10px] text-muted-foreground">
             Showing the {Math.min(10, dailyCoinPnl.coverage)} largest of{' '}
-            {dailyCoinPnl.coverage} priced coin contributors by absolute P&amp;L.
-            Stablecoins are excluded. Staked balances are included; newly
-            earned reward tokens enter after the wallet is resynced. Quantity
-            changes made after midnight are applied to the full UTC-day move.
+            {dailyCoinPnl.coverage} priced coin contributors by absolute
+            P&amp;L. Stablecoins are excluded. Staked balances are included;
+            newly earned reward tokens enter after the wallet is resynced.
+            Quantity changes made after midnight are applied to the full UTC-day
+            move.
           </p>
         </div>
       </Panel>
@@ -1373,27 +1362,6 @@ function HistoryEmptyState({ message }: { message: string }) {
       </div>
     </div>
   );
-}
-
-function repairDisplayedCompositionSteps<
-  T extends { timestamp: number; value: number },
->(points: T[]) {
-  if (points.length < 2) return points;
-  const repaired = points.map((point) => ({ ...point }));
-  let earlierOffset = 0;
-  for (let index = points.length - 2; index >= 0; index -= 1) {
-    const point = points[index];
-    const next = points[index + 1];
-    const step = next.value - point.value;
-    const smallerLevel = Math.max(
-      100,
-      Math.min(Math.abs(point.value), Math.abs(next.value)),
-    );
-    if (Math.abs(step) >= 2_500 && Math.abs(step) / smallerLevel >= 0.75)
-      earlierOffset += step;
-    repaired[index].value = Math.max(0, point.value + earlierOffset);
-  }
-  return repaired;
 }
 
 function AllocationTooltip({

@@ -180,10 +180,9 @@ function mergeAlignedPnlWindows(windows: VenueHistoryPoint[][]) {
   return windows.reduce((merged, detail) => {
     if (!detail.length) return merged;
     if (!merged.length) return detail;
-    const detailEnd = detail.at(-1);
-    if (!detailEnd) return merged;
-    const anchor = historyValueAt(merged, detailEnd.timestamp);
-    const offset = anchor - detailEnd.value;
+    const detailStart = detail[0];
+    const anchor = historyValueAt(merged, detailStart.timestamp);
+    const offset = anchor - detailStart.value;
     return overlayHistoryWindow(
       merged,
       detail.map((point) => ({ ...point, value: point.value + offset })),

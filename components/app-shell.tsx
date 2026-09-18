@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useSyncExternalStore } from 'react';
 import {
   Activity,
+  CalendarDays,
   ChartNoAxesCombined,
   CircleGauge,
   Crosshair,
@@ -40,6 +41,7 @@ const navItems = [
   { href: '/platforms', label: 'Platforms', icon: ShieldAlert },
   { href: '/targets', label: 'Targets', icon: Crosshair },
   { href: '/analytics', label: 'Analytics', icon: CircleGauge },
+  { href: '/calendar', label: 'P&L Calendar', icon: CalendarDays },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -74,6 +76,7 @@ const pageMeta: Record<string, { title: string; eyebrow: string }> = {
     title: 'Portfolio analytics',
     eyebrow: 'Allocation & performance',
   },
+  '/calendar': { title: 'P&L calendar', eyebrow: 'UTC performance journal' },
   '/settings': { title: 'Local preferences', eyebrow: 'Privacy & data' },
 };
 
@@ -270,7 +273,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <nav
         aria-label="Mobile navigation"
-        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-8 rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
+        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-9 rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
       >
         {navItems.map((item) => {
           const Icon = item.icon;

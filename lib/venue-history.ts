@@ -3,12 +3,11 @@ import type {
   VenueHistoryPoint,
   VenueHistorySeries,
 } from '@/lib/portfolio';
-import {
-  repairCompositionSteps,
-  repairTransientCompositionSpikes,
-} from './history-utils.ts';
+import { repairTransientCompositionSpikes } from './history-utils.ts';
 
-export const VENUE_HISTORY_VERSION = 3;
+// Bump when provider history normalization changes so cached browser series are
+// refreshed instead of preserving an old discontinuity in the chart.
+export const VENUE_HISTORY_VERSION = 4;
 
 export type WalletHistoryPayload = Omit<VenueHistorySeries, 'profileId'>;
 
@@ -90,19 +89,10 @@ export function buildPortfolioHistory(
   const repairedLocal = repairTransientCompositionSpikes(
     cleanHistoryPoints(localSnapshots),
   );
-  const latestSavedValue = repairedLocal.at(-1)?.value;
   const current = Number.isFinite(currentValue) ? currentValue : 0;
-  // Snapshots are rebased whenever holdings are added or removed. Aligning the
-  // saved curve to its current endpoint also repairs older/incomplete imports
-  // that changed portfolio composition before that rebasing existed. This
-  // preserves every recorded P&L delta while preventing a wallet resync from
-  // appearing as a vertical gain or loss at the end of the chart.
-  const endpointOffset = Number.isFinite(latestSavedValue)
-    ? current - Number(latestSavedValue)
-    : 0;
   const local = repairedLocal.map((point) => ({
     timestamp: point.timestamp,
-    value: Math.max(0, point.value + endpointOffset),
+    value: point.value,
     origin: 'local' as const,
     sources: ['Local snapshot'],
   }));
@@ -115,21 +105,38 @@ export function buildPortfolioHistory(
   const localCurve = dedupeHistoryPoints([...local, currentAnchor]);
   const pnlCurve = buildVenuePnlHistory(parsedHistories);
   if (pnlCurve.length > 1) {
+    // Local snapshots are the authoritative whole-portfolio record. Venue P&L
+    // only extends the chart to dates before local tracking began; replacing
+    // the local curve here makes a restored wallet look like one giant gain.
+    const firstLocal = local[0];
+    if (firstLocal) {
+      const pnlAtLocalStart = valueAt(pnlCurve, firstLocal.timestamp);
+      const backfill = pnlCurve
+        .filter((point) => point.timestamp < firstLocal.timestamp)
+        .map((point) => ({
+          ...point,
+          value: Math.max(0, firstLocal.value + point.value - pnlAtLocalStart),
+          sources: point.sources.map((source) => `${source} P&L`),
+        }));
+      return dedupeHistoryPoints([...backfill, ...localCurve]);
+    }
+
+    // Before the first local snapshot, anchor the available venue performance
+    // shape to today's whole-portfolio equity. Non-venue holdings therefore
+    // remain a constant offset instead of appearing as a terminal spike.
     const latestPnl = pnlCurve.at(-1)?.value ?? 0;
     const venueBackfill = pnlCurve.map((point) => ({
       ...point,
       value: Math.max(0, current + point.value - latestPnl),
       sources: point.sources.map((source) => `${source} P&L`),
     }));
-    return repairCompositionSteps(
-      dedupeHistoryPoints([...venueBackfill, currentAnchor]),
-    );
+    return dedupeHistoryPoints([...venueBackfill, currentAnchor]);
   }
 
   const histories = parsedHistories.filter(
     (series) => series.points.length > 1,
   );
-  if (!histories.length) return repairCompositionSteps(localCurve);
+  if (!histories.length) return localCurve;
 
   const anchor = localCurve[0];
   const sourceAtAnchor = histories.reduce(
@@ -163,9 +170,7 @@ export function buildPortfolioHistory(
     };
   });
 
-  return repairCompositionSteps(
-    dedupeHistoryPoints([...backfill, ...localCurve]),
-  );
+  return dedupeHistoryPoints([...backfill, ...localCurve]);
 }
 
 export function buildPortfolioPnlHistory(

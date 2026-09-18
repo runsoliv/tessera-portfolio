@@ -44,18 +44,19 @@ void test('position additions and removals do not become portfolio P&L', () => {
   assert.equal(history.at(-1)?.value, 100);
 });
 
-void test('repairs a stale saved endpoint without turning composition into P&L', () => {
+void test('does not rewrite genuine movement after the last saved point', () => {
   const now = Date.now();
   const history = buildPortfolioHistory(
     [
-      { timestamp: now - 120_000, value: 5_000 },
-      { timestamp: now - 60_000, value: 7_000 },
+      { timestamp: now - 120_000, value: 14_000 },
+      { timestamp: now - 60_000, value: 15_000 },
     ],
     [],
     16_000,
   );
 
   assert.equal(history[0]?.value, 14_000);
+  assert.equal(history[1]?.value, 15_000);
   assert.equal(history.at(-1)?.value, 16_000);
   assert.equal(
     Number(history.at(-1)?.value) - Number(history[0]?.value),
@@ -135,8 +136,46 @@ void test('uses venue P&L before local whole-portfolio tracking begins', () => {
   );
 
   assert.equal(history[0]?.value, 0);
-  assert.equal(history.at(-1)?.value, 500);
+  assert.equal(history.at(-1)?.value, 600);
   assert.equal(history.at(-1)?.origin, 'local');
+});
+
+void test('venue backfill preserves every local whole-portfolio snapshot', () => {
+  const now = Date.now();
+  const day = 86_400_000;
+  const history = buildPortfolioHistory(
+    [
+      { timestamp: now - day, value: 14_000 },
+      { timestamp: now - 30_000, value: 15_000 },
+    ],
+    [
+      {
+        profileId: 'hl-local-splice',
+        source: 'hyperliquid',
+        platform: 'Hyperliquid',
+        address: '0x0000000000000000000000000000000000000000',
+        points: [],
+        pnlPoints: [
+          { timestamp: now - 3 * day, value: 0 },
+          { timestamp: now - 2 * day, value: 250 },
+          { timestamp: now - day, value: 500 },
+        ],
+        fetchedAt: now,
+        provider: 'Test venue history',
+        historyVersion: 3,
+      },
+    ],
+    16_000,
+  );
+
+  assert.deepEqual(
+    history.slice(-3).map((point) => point.value),
+    [14_000, 15_000, 16_000],
+  );
+  assert.equal(
+    history.find((point) => point.timestamp === now - day)?.value,
+    14_000,
+  );
 });
 
 void test('groups cumulative performance into positive and negative daily bars', () => {
