@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { rebasePortfolioSnapshots } from '../lib/history-utils.ts';
+import {
+  rebasePortfolioSnapshots,
+  repairTransientCompositionSpikes,
+} from '../lib/history-utils.ts';
 import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioPnlHistory,
@@ -37,6 +40,34 @@ void test('position additions and removals do not become portfolio P&L', () => {
 
   assert.equal(history[0]?.value, 0);
   assert.equal(history.at(-1)?.value, 100);
+});
+
+void test('repairs an overnight remove-and-add-back valley', () => {
+  const now = Date.now();
+  const repaired = repairTransientCompositionSpikes([
+    { timestamp: now - 48 * 60 * 60_000, value: 16_400 },
+    { timestamp: now - 24 * 60 * 60_000, value: 14_300 },
+    { timestamp: now, value: 17_100 },
+  ]);
+
+  assert.deepEqual(
+    repaired.map((point) => point.value),
+    [16_400, 17_100],
+  );
+});
+
+void test('keeps a sustained market drawdown in history', () => {
+  const now = Date.now();
+  const repaired = repairTransientCompositionSpikes([
+    { timestamp: now - 48 * 60 * 60_000, value: 16_400 },
+    { timestamp: now - 24 * 60 * 60_000, value: 14_300 },
+    { timestamp: now, value: 14_500 },
+  ]);
+
+  assert.deepEqual(
+    repaired.map((point) => point.value),
+    [16_400, 14_300, 14_500],
+  );
 });
 
 void test('uses venue P&L before local whole-portfolio tracking begins', () => {

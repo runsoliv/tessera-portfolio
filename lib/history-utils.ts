@@ -1,5 +1,7 @@
 import type { PortfolioSnapshot } from './portfolio.ts';
 
+const COMPOSITION_REVERSAL_WINDOW = 3 * 86_400_000;
+
 export function rebasePortfolioSnapshots(
   snapshots: PortfolioSnapshot[],
   valueDelta: number,
@@ -36,7 +38,11 @@ export function repairTransientCompositionSpikes<T extends PortfolioSnapshot>(
     if (pointOrigin && pointOrigin !== 'local') return true;
     const previous = ordered[index - 1];
     const next = ordered[index + 1];
-    if (next.timestamp - previous.timestamp > 2 * 60 * 60_000) return true;
+    // A wallet/profile can be removed, left out overnight, and added back on a
+    // later refresh. Treat the resulting isolated V/Λ as a composition event,
+    // not market performance, when the surrounding equity level reconnects.
+    if (next.timestamp - previous.timestamp > COMPOSITION_REVERSAL_WINDOW)
+      return true;
     const intoSpike = point.value - previous.value;
     const outOfSpike = next.value - point.value;
     if (intoSpike === 0 || outOfSpike === 0 || intoSpike * outOfSpike >= 0)
