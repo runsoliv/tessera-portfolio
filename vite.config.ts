@@ -6,6 +6,12 @@ import hostingConfig from './.openai/hosting.json';
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   '00000000-0000-4000-8000-000000000000';
+const VINEXT_OPTIMIZE_EXCLUDES = [
+  'vinext',
+  'vinext/dist/shims/internal/app-prefetch-fetch-queue.js',
+  'next/link',
+  'next/navigation',
+];
 
 const { d1, r2 } = hostingConfig;
 
@@ -46,6 +52,16 @@ export default defineConfig(async () => {
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
+    optimizeDeps: {
+      // Prevent Vinext's RSC prefetch shim from being loaded through both the
+      // optimized and source graphs during HMR, which can duplicate context.
+      exclude: VINEXT_OPTIMIZE_EXCLUDES,
+    },
+    environments: {
+      // optimizeDeps is intentionally not inherited by server environments.
+      rsc: { optimizeDeps: { exclude: VINEXT_OPTIMIZE_EXCLUDES } },
+      ssr: { optimizeDeps: { exclude: VINEXT_OPTIMIZE_EXCLUDES } },
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArrowDownRight,
@@ -48,6 +48,7 @@ import {
   formatHistoryTick,
 } from '@/lib/analytics';
 import { formatMoney } from '@/lib/portfolio';
+import type { SparklineSeries } from '@/lib/sparklines';
 import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioHistory,
@@ -126,6 +127,62 @@ export default function OverviewPage() {
     (profile) =>
       profile.source === 'hyperliquid' || profile.source === 'lighter',
   );
+  const largestAssets = useMemo(
+    () => analytics.assetData.slice(0, 5),
+    [analytics.assetData],
+  );
+  const sparklineAssets = useMemo(
+    () =>
+      largestAssets.map((asset) => {
+        const matchingHoldings = analytics.holdings.filter(
+          (holding) =>
+            holding.symbol.toUpperCase() === asset.symbol &&
+            (holding.instrumentType === 'stock' ? 'stock' : 'crypto') ===
+              asset.instrumentType,
+        );
+        const identified = matchingHoldings.find((holding) => holding.coinId);
+        const marketLinked = matchingHoldings.find(
+          (holding) => holding.marketRef,
+        );
+        return {
+          key: asset.key,
+          symbol: asset.symbol,
+          instrumentType: asset.instrumentType,
+          coinId: identified?.coinId,
+          marketRef: marketLinked?.marketRef,
+        };
+      }),
+    [analytics.holdings, largestAssets],
+  );
+  const sparklineRequestKey = JSON.stringify(sparklineAssets);
+  const [sparklines, setSparklines] = useState<Record<string, SparklineSeries>>(
+    {},
+  );
+  useEffect(() => {
+    const requestedAssets = JSON.parse(
+      sparklineRequestKey,
+    ) as typeof sparklineAssets;
+    if (!requestedAssets.length) return;
+    const controller = new AbortController();
+    void fetch('/api/market/sparklines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assets: requestedAssets }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Sparkline history failed');
+        return (await response.json()) as {
+          sparklines?: Record<string, SparklineSeries>;
+        };
+      })
+      .then((result) => setSparklines(result.sparklines ?? {}))
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError'))
+          setSparklines({});
+      });
+    return () => controller.abort();
+  }, [sparklineRequestKey]);
   const historyDomain: [number, number] | ['dataMin', 'dataMax'] =
     range === 'CUSTOM' && customRange
       ? [customRange.start, customRange.end]
@@ -607,6 +664,33 @@ export default function OverviewPage() {
         />
       </section>
 
+      {largestAssets.length > 0 && (
+        <Panel className="mt-3 overflow-hidden">
+          <PanelHeader
+            title="Market trends"
+            description="Recent price movement for the portfolio's largest exposures · each chart uses its own market range"
+            aside={
+              <span className="whitespace-nowrap rounded-md border border-border bg-muted px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
+                Live market data
+              </span>
+            }
+          />
+          <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {largestAssets.map((asset) => {
+              const sparkline = sparklines[asset.key];
+              return (
+                <MarketTrendCard
+                  key={asset.key}
+                  symbol={asset.symbol}
+                  color={asset.color}
+                  series={sparkline}
+                />
+              );
+            })}
+          </div>
+        </Panel>
+      )}
+
       <section className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(310px,.55fr)]">
         <Panel className="overflow-hidden">
           <PanelHeader
@@ -621,8 +705,23 @@ export default function OverviewPage() {
               </Link>
             }
           />
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/25 px-5 py-3.5">
+            <div>
+              <p className="text-[11px] font-medium text-muted-foreground">
+                Daily portfolio P&amp;L
+              </p>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Calendar day · resets at 12:00 AM local time
+              </p>
+            </div>
+            <p
+              className={`font-mono text-[20px] font-bold tracking-[-0.03em] ${todayPnl >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+            >
+              <Money value={todayPnl} privacy={privacy} signed />
+            </p>
+          </div>
           <div className="divide-y divide-border">
-            {analytics.assetData.slice(0, 5).map((asset) => (
+            {largestAssets.map((asset) => (
               <div
                 key={asset.key}
                 className="grid w-full gap-4 px-5 py-4 lg:grid-cols-[minmax(190px,1fr)_130px_120px_170px] lg:items-center"
@@ -771,6 +870,151 @@ export default function OverviewPage() {
       </section>
     </>
   );
+}
+
+function MarketTrendCard({
+  symbol,
+  color,
+  series,
+}: {
+  symbol: string;
+  color: string;
+  series?: SparklineSeries;
+}) {
+  const points = series?.points ?? [];
+  const chartData = points.map((value, index) => ({ index, value }));
+  const first = points[0];
+  const latest = points.at(-1);
+  const low = points.length ? Math.min(...points) : null;
+  const high = points.length ? Math.max(...points) : null;
+  const span = low != null && high != null ? high - low : 0;
+  const padding = Math.max(span * 0.14, Number(latest ?? 0) * 0.001, 0.000001);
+  const chartDomain: [number, number] = [
+    Math.max(0, Number(low ?? 0) - padding),
+    Number(high ?? 0) + padding,
+  ];
+  const isPositive = Number(series?.changePercent ?? 0) >= 0;
+  const trendColor = isPositive ? 'var(--positive)' : 'var(--negative)';
+
+  return (
+    <article className="min-w-0 bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className="grid size-8 shrink-0 place-items-center rounded-lg text-[10px] font-bold text-slate-950"
+            style={{ background: color }}
+          >
+            {symbol.slice(0, 1)}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-[14px] font-semibold text-foreground">
+              {symbol}
+            </p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              {series?.range ?? 'Recent'} price
+            </p>
+          </div>
+        </div>
+        <span
+          className="whitespace-nowrap font-mono text-[13px] font-bold"
+          style={{ color: trendColor }}
+        >
+          {series?.changePercent == null
+            ? '—'
+            : `${isPositive ? '+' : ''}${series.changePercent.toFixed(1)}%`}
+        </span>
+      </div>
+
+      {points.length > 1 ? (
+        <figure
+          className="mt-4"
+          aria-label={`${symbol} ${series?.range ?? 'recent'} price trend`}
+        >
+          <ChartContainer
+            config={{ price: { color: trendColor } }}
+            className="h-[104px] w-full aspect-auto"
+            initialDimension={{ width: 220, height: 104 }}
+          >
+            <AreaChart
+              data={chartData}
+              margin={{ top: 5, right: 2, bottom: 5, left: 2 }}
+            >
+              <YAxis hide domain={chartDomain} />
+              <ReferenceLine
+                y={first}
+                stroke="var(--muted-foreground)"
+                strokeDasharray="3 4"
+                strokeOpacity={0.35}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke="var(--color-price)"
+                strokeWidth={2.5}
+                fill="var(--color-price)"
+                fillOpacity={0.14}
+                baseValue={chartDomain[0]}
+                dot={false}
+                activeDot={{ r: 3, strokeWidth: 0 }}
+                isAnimationActive={false}
+              />
+              <Tooltip
+                content={<MarketPriceTooltip />}
+                cursor={{ stroke: 'var(--border)', strokeWidth: 1 }}
+              />
+            </AreaChart>
+          </ChartContainer>
+        </figure>
+      ) : (
+        <div className="mt-4 grid h-[104px] place-items-center rounded-lg border border-dashed border-border bg-muted/25 text-[10px] text-muted-foreground">
+          Market history unavailable
+        </div>
+      )}
+
+      <div className="mt-3 flex items-end justify-between gap-3 border-t border-border pt-3">
+        <div>
+          <p className="text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
+            Latest
+          </p>
+          <p className="mt-1 font-mono text-[13px] font-semibold text-foreground">
+            {latest == null ? '—' : formatMarketPrice(latest)}
+          </p>
+        </div>
+        <div className="text-right font-mono text-[9px] leading-4 text-muted-foreground">
+          <p>L {low == null ? '—' : formatMarketPrice(low)}</p>
+          <p>H {high == null ? '—' : formatMarketPrice(high)}</p>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function MarketPriceTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ value?: number }>;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-md border border-border bg-popover px-2.5 py-2 shadow-lg">
+      <p className="text-[9px] text-muted-foreground">Market price</p>
+      <p className="mt-1 font-mono text-[11px] font-semibold text-foreground">
+        {formatMarketPrice(Number(payload[0].value))}
+      </p>
+    </div>
+  );
+}
+
+function formatMarketPrice(value: number) {
+  const digits = value < 1 ? 5 : value < 100 ? 3 : 2;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: value < 1 ? Math.min(4, digits) : 2,
+    maximumFractionDigits: digits,
+  }).format(value);
 }
 
 function HeroMetric({
