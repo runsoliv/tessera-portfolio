@@ -1,4 +1,5 @@
 import { CURATED_ASSETS } from '@/lib/portfolio';
+import { reconcileVenueEquity } from '@/lib/venue-equity';
 import type {
   SolanaWalletSnapshot,
   WalletImportCandidate,
@@ -840,16 +841,39 @@ async function importHyperliquid(
         : undefined;
   const perpUniverse = perpMarket?.[0]?.universe ?? [];
   const perpContexts = perpMarket?.[1] ?? [];
-  const accountValue =
-    finiteNonNegative(perpState?.marginSummary?.accountValue) ?? 0;
+  const reportedAccountValue = finiteNonNegative(
+    perpState?.marginSummary?.accountValue,
+  );
+  const accountValue = reportedAccountValue ?? 0;
   const totalMarginUsed =
     finiteNonNegative(perpState?.marginSummary?.totalMarginUsed) ?? 0;
-  const freePerpCollateral =
-    webData?.spotState || accountMode !== 'unifiedAccount'
-      ? Math.max(0, accountValue - totalMarginUsed)
-      : 0;
   const countPerpEquity =
     Boolean(webData?.spotState) || accountMode !== 'unifiedAccount';
+  const hyperliquidPositionMargins = (perpState?.assetPositions ?? [])
+    .filter(
+      (wrapper) =>
+        Math.abs(Number(wrapper.position?.szi)) > 0 &&
+        Boolean(wrapper.position?.coin),
+    )
+    .map((wrapper) => {
+      const position = wrapper.position;
+      const amount = Math.abs(Number(position?.szi));
+      const entryPrice = positiveNumber(position?.entryPx);
+      const leverage = clamp(Number(position?.leverage?.value ?? 1), 1, 100);
+      return (
+        finiteNonNegative(position?.marginUsed) ??
+        (entryPrice ? (amount * entryPrice) / leverage : undefined)
+      );
+    });
+  const hyperliquidEquity = reconcileVenueEquity(
+    reportedAccountValue,
+    Math.max(0, accountValue - totalMarginUsed),
+    hyperliquidPositionMargins,
+  );
+  const freePerpCollateral = countPerpEquity
+    ? hyperliquidEquity.availableEquity
+    : 0;
+  let hyperliquidPositionIndex = 0;
 
   if (perpState) {
     for (const wrapper of perpState.assetPositions ?? []) {
@@ -880,7 +904,11 @@ async function importHyperliquid(
       const marginCollateral =
         positiveNumber(position.marginUsed) ??
         (entryPrice ? (amount * entryPrice) / leverage : undefined);
-      const equityOverride = countPerpEquity ? marginCollateral : 0;
+      const equityOverride = countPerpEquity
+        ? (hyperliquidEquity.positionEquities[hyperliquidPositionIndex] ??
+          marginCollateral)
+        : 0;
+      hyperliquidPositionIndex += 1;
       const symbol = cleanSymbol(position.coin);
       items.push({
         id: `hyperliquid:perp:${symbol}:${signedSize < 0 ? 'short' : 'long'}`,
@@ -1168,7 +1196,35 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
     const accountIndex = String(
       account.index ?? account.account_index ?? 'main',
     );
-    availableUsdc += Math.max(0, Number(account.available_balance ?? 0));
+    const accountPositions = (account.positions ?? []).filter(
+      (position) =>
+        Math.abs(Number(position.position)) > 0 && Boolean(position.symbol),
+    );
+    const accountPositionMargins = accountPositions.map((position) => {
+      const amount = Math.abs(Number(position.position));
+      const entryPrice = positiveNumber(position.avg_entry_price);
+      const positionValue = Math.abs(Number(position.position_value ?? 0));
+      const initialMarginFraction = positiveNumber(
+        position.initial_margin_fraction,
+      );
+      const leverage = initialMarginFraction
+        ? clamp(100 / initialMarginFraction, 1, 100)
+        : 1;
+      return (
+        positiveNumber(position.allocated_margin) ??
+        (positionValue > 0
+          ? positionValue / leverage
+          : entryPrice
+            ? (amount * entryPrice) / leverage
+            : undefined)
+      );
+    });
+    const accountEquity = reconcileVenueEquity(
+      finiteNonNegative(account.total_asset_value),
+      finiteNonNegative(account.available_balance),
+      accountPositionMargins,
+    );
+    availableUsdc += accountEquity.availableEquity;
     for (const asset of account.assets ?? []) {
       const symbol = cleanSymbol(asset.symbol);
       const amount = Number(asset.balance);
@@ -1221,7 +1277,7 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       if (amount > 0 && Number.isFinite(amount)) pendingLighter += amount;
     }
 
-    for (const position of account.positions ?? []) {
+    for (const [positionIndex, position] of accountPositions.entries()) {
       const signedAmount = Number(position.position);
       const amount = Math.abs(signedAmount);
       if (!(amount > 0) || !position.symbol) continue;
@@ -1243,6 +1299,8 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       const allocated = positiveNumber(position.allocated_margin);
       const marginCollateral =
         allocated ?? (positionValue > 0 ? positionValue / leverage : undefined);
+      const equityOverride =
+        accountEquity.positionEquities[positionIndex] ?? marginCollateral;
       const coinId = coinIdForSymbol(symbol);
       items.push({
         id: `lighter:perp:${accountIndex}:${position.market_id}:${side}`,
@@ -1255,14 +1313,14 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
         priceSource: 'lighter',
         provider: 'Lighter snapshot',
         price,
-        estimatedValue: marginCollateral,
+        estimatedValue: equityOverride,
         coinId,
         side,
         leverage,
         entryPrice,
         marginMode: Number(position.margin_mode) === 1 ? 'isolated' : 'cross',
         marginCollateral,
-        equityOverride: marginCollateral,
+        equityOverride,
         equityMarkPrice: price,
         reportedUnrealizedPnl: finiteNumber(position.unrealized_pnl),
         liquidationModel: 'reported-only',
@@ -1615,6 +1673,11 @@ type LighterAccount = {
   index?: number;
   account_index?: number;
   available_balance?: string;
+  collateral?: string;
+  total_asset_value?: string;
+  cross_asset_value?: string;
+  cross_initial_margin_requirement?: string;
+  cross_maintenance_margin_requirement?: string;
   positions?: LighterPosition[];
   assets?: Array<{
     symbol?: string;

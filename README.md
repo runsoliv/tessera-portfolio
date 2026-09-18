@@ -65,10 +65,18 @@ The dashboard uses multiple public providers, including CoinGecko, DEX Screener,
 
 Lighter does not expose complete historical equity and P&L for every standard account through its public endpoints. Local snapshots continue tracking those accounts after import.
 
+## Perpetual accounting
+
+- **Account leverage** is gross or signed net perpetual notional divided by current usable trading equity.
+- Lighter trading equity reconciles to `total_asset_value`; Hyperliquid perp equity reconciles to `marginSummary.accountValue`. These venue totals already include unrealized P&L, so P&L is counted once rather than added twice.
+- **Margin used** remains the venue-reported or initial-margin requirement. It is not treated as the account's full equity.
+- Staked and unstaking balances are excluded from every margin and account-leverage denominator.
+
 ## Commands
 
 ```bash
 npm run dev      # local development server
+npm test         # accounting regression tests
 npm run lint     # source checks
 npm run format   # format source files
 npm run build    # production build

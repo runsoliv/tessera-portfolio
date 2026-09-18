@@ -297,7 +297,7 @@ export default function PlatformRiskPage() {
           <Panel className="mt-3 overflow-hidden">
             <PanelHeader
               title={`${activePlatform.platform} capital and exposure`}
-              description="Trading equity excludes staked and unstaking assets from every margin and leverage denominator"
+              description="Trading equity includes venue-reported open P&L once and excludes staked or unstaking assets from leverage"
               aside={
                 <span className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
                   {activePlatform.longCount} long · {activePlatform.shortCount}{' '}
@@ -320,7 +320,7 @@ export default function PlatformRiskPage() {
                     ? '••••'
                     : formatMoney(activePlatform.tradingEquity, true)
                 }
-                detail="Liquid spot + perp equity"
+                detail="Current account equity incl. open P&L"
               />
               <VenueMetric
                 label="Liquid spot"
@@ -396,7 +396,7 @@ export default function PlatformRiskPage() {
                 }
               />
               <VenueMetric
-                label="Gross leverage"
+                label="Gross account leverage"
                 value={`${activePlatform.grossLeverage.toFixed(2)}×`}
                 detail="Gross notional ÷ trading equity"
                 tone={
@@ -404,7 +404,7 @@ export default function PlatformRiskPage() {
                 }
               />
               <VenueMetric
-                label="Net leverage"
+                label="Net account leverage"
                 value={signedMultiple(activePlatform.netLeverage)}
                 detail="Net notional ÷ trading equity"
               />
@@ -1095,7 +1095,7 @@ function PlatformCard({
           value={privacy ? '••••' : formatMoney(platform.perpNotional, true)}
         />
         <MiniStat
-          label="Gross / net lev."
+          label="Account gross / net lev."
           value={`${platform.grossLeverage.toFixed(2)}× / ${signedMultiple(platform.netLeverage)}`}
         />
         <MiniStat
