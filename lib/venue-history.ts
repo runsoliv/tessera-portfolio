@@ -202,6 +202,21 @@ export function buildDailyPortfolioPnlHistory(
   });
 }
 
+export function currentCalendarDayPnl(
+  dailyHistory: DailyPortfolioPnlPoint[],
+  now = Date.now(),
+) {
+  const latest = dailyHistory.at(-1);
+  if (!latest) return 0;
+  const currentDate = new Date(now);
+  const latestDate = new Date(latest.timestamp);
+  return currentDate.getFullYear() === latestDate.getFullYear() &&
+    currentDate.getMonth() === latestDate.getMonth() &&
+    currentDate.getDate() === latestDate.getDate()
+    ? latest.value
+    : 0;
+}
+
 function buildVenuePnlHistory(
   venueHistories: VenueHistorySeries[],
 ): PortfolioHistoryPoint[] {

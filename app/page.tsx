@@ -52,6 +52,7 @@ import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioHistory,
   buildPortfolioPnlHistory,
+  currentCalendarDayPnl,
   historySourceLabels,
 } from '@/lib/venue-history';
 
@@ -109,6 +110,9 @@ export default function OverviewPage() {
     () => filterSnapshots(combinedDailyPnlHistory, range, customRange),
     [combinedDailyPnlHistory, customRange, range],
   );
+  const todayPnl = currentCalendarDayPnl(combinedDailyPnlHistory);
+  const openingEquity = analytics.totalValue - todayPnl;
+  const todayChange = openingEquity > 0 ? (todayPnl / openingEquity) * 100 : 0;
   const historySources = useMemo(
     () => historySourceLabels(portfolio.venueHistories ?? []),
     [portfolio.venueHistories],
@@ -199,21 +203,22 @@ export default function OverviewPage() {
               </p>
               {analytics.totalValue !== 0 && (
                 <span
-                  className={`mb-1.5 flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-semibold sm:mb-2 ${analytics.dayChange >= 0 ? 'border-border bg-muted text-[var(--positive)]' : 'border-destructive/20 bg-destructive/10 text-destructive'}`}
+                  className={`mb-1.5 flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-semibold sm:mb-2 ${todayChange >= 0 ? 'border-border bg-muted text-[var(--positive)]' : 'border-destructive/20 bg-destructive/10 text-destructive'}`}
                 >
-                  {analytics.dayChange >= 0 ? (
+                  {todayChange >= 0 ? (
                     <ArrowUpRight className="size-3.5" />
                   ) : (
                     <ArrowDownRight className="size-3.5" />
                   )}
-                  {Math.abs(analytics.dayChange).toFixed(2)}%
+                  {Math.abs(todayChange).toFixed(2)}%
                 </span>
               )}
             </div>
             <p className="mt-3 text-[12px] text-muted-foreground">
-              <Money value={analytics.dayPnl} privacy={privacy} signed /> today
-              · {analytics.cryptoSpot.length} crypto · {analytics.stocks.length}{' '}
-              stocks · {analytics.perps.length} perpetual
+              <Money value={todayPnl} privacy={privacy} signed /> today since
+              midnight · {analytics.cryptoSpot.length} crypto ·{' '}
+              {analytics.stocks.length} stocks · {analytics.perps.length}{' '}
+              perpetual
             </p>
             <div className="mt-7 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border xl:grid-cols-4">
               <HeroMetric

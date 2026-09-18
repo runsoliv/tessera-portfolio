@@ -5,6 +5,7 @@ import { rebasePortfolioSnapshots } from '../lib/history-utils.ts';
 import {
   buildDailyPortfolioPnlHistory,
   buildPortfolioPnlHistory,
+  currentCalendarDayPnl,
   type PortfolioHistoryPoint,
 } from '../lib/venue-history.ts';
 
@@ -108,5 +109,24 @@ void test('groups cumulative performance into positive and negative daily bars',
       { value: 125, positive: 125, negative: 0 },
       { value: -50, positive: 0, negative: -50 },
     ],
+  );
+});
+
+void test('headline P&L resets outside the current local calendar day', () => {
+  const yesterday = new Date(2026, 8, 17, 23, 59).getTime();
+  const today = new Date(2026, 8, 18, 0, 1).getTime();
+  const point = {
+    timestamp: yesterday,
+    value: 250,
+    positive: 250,
+    negative: 0,
+    origin: 'local' as const,
+    sources: ['Local snapshot'],
+  };
+
+  assert.equal(currentCalendarDayPnl([point], today), 0);
+  assert.equal(
+    currentCalendarDayPnl([{ ...point, timestamp: today }], today),
+    250,
   );
 });
