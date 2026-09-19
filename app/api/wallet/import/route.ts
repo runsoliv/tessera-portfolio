@@ -1202,6 +1202,8 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
   const warnings: string[] = [];
   if (data.accounts.some((account) => !Array.isArray(account.positions)))
     warnings.push(`${venueName} perpetual positions could not be read.`);
+  if (data.accounts.some((account) => !Array.isArray(account.assets)))
+    warnings.push(`${venueName} spot balances could not be read.`);
   if (!robinhood && !stakingPools.public_pools?.length)
     warnings.push(
       'Lighter staking metadata was unavailable, so staked LIT may not be included in this snapshot.',

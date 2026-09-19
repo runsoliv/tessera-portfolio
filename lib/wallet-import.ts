@@ -3,6 +3,28 @@ import type { WalletHistoryPayload } from '@/lib/venue-history';
 
 export type WalletImportSource = 'onchain' | 'hyperliquid' | 'lighter';
 
+export type WalletSnapshotKind = 'perp' | 'spot' | 'staking';
+
+export function incompleteWalletSnapshotKinds(
+  source: WalletImportSource,
+  warnings: string[] = [],
+) {
+  const kinds = new Set<WalletSnapshotKind>();
+  const normalized = warnings.join(' ').toLowerCase();
+  if (
+    normalized.includes('staking metadata was unavailable') ||
+    normalized.includes('staked hype balances could not be read')
+  )
+    kinds.add('staking');
+  if (source === 'hyperliquid' || source === 'lighter') {
+    if (normalized.includes('perpetual positions could not be read'))
+      kinds.add('perp');
+    if (normalized.includes('spot balances could not be read'))
+      kinds.add('spot');
+  }
+  return kinds;
+}
+
 export type WalletImportCandidate = {
   id: string;
   name: string;

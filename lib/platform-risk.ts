@@ -236,8 +236,22 @@ function calculatePlatformRisk(
   const isolatedCount = perps.filter(
     (holding) => holding.marginMode === 'isolated',
   ).length;
+  const profilesWithAccounts = new Set(
+    holdings
+      .filter((holding) => holding.importProfileId && holding.accountLabel)
+      .map((holding) => holding.importProfileId),
+  );
   const accountCount = new Set(
-    holdings.map((holding) => holding.accountLabel).filter(Boolean),
+    holdings.flatMap((holding) => {
+      if (holding.importProfileId) {
+        if (holding.accountLabel)
+          return [`${holding.importProfileId}:${holding.accountLabel}`];
+        return profilesWithAccounts.has(holding.importProfileId)
+          ? []
+          : [holding.importProfileId];
+      }
+      return holding.accountLabel ? [holding.accountLabel] : [];
+    }),
   ).size;
   const riskScore = calculateRiskScore({
     perps,

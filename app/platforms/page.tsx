@@ -1114,6 +1114,12 @@ function PlatformCard({
           }}
         />
       </div>
+      {platform.platform === 'Lighter' && (
+        <p className="mt-3 text-[10px] text-muted-foreground">
+          Liquid spot (including collateral):{' '}
+          {privacy ? '••••' : formatMoney(platform.liquidSpotValue, true)}
+        </p>
+      )}
       <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-4">
         <MiniStat
           label="Equity"

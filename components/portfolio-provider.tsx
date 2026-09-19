@@ -57,6 +57,7 @@ import {
   VENUE_HISTORY_VERSION,
 } from '@/lib/venue-history';
 import { isSuspiciousSpotPriceJump } from '@/lib/price-guard';
+import { incompleteWalletSnapshotKinds } from '@/lib/wallet-import';
 import type {
   QuantityAdjustment,
   WalletImportCandidate,
@@ -1586,31 +1587,6 @@ function walletSnapshotKind(holding: Holding): WalletSnapshotKind {
   )
     return 'staking';
   return 'spot';
-}
-
-function incompleteWalletSnapshotKinds(
-  source: WalletImportSource,
-  warnings: string[] = [],
-) {
-  const kinds = new Set<WalletSnapshotKind>();
-  const normalized = warnings.join(' ').toLowerCase();
-  if (
-    normalized.includes('staking metadata was unavailable') ||
-    normalized.includes('staked hype balances could not be read')
-  )
-    kinds.add('staking');
-  if (source === 'hyperliquid') {
-    if (normalized.includes('perpetual positions could not be read'))
-      kinds.add('perp');
-    if (normalized.includes('spot balances could not be read'))
-      kinds.add('spot');
-  }
-  if (
-    source === 'lighter' &&
-    normalized.includes('perpetual positions could not be read')
-  )
-    kinds.add('perp');
-  return kinds;
 }
 
 function matchesImport(
