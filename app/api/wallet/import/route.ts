@@ -875,7 +875,7 @@ async function importHyperliquid(
     : 0;
   let hyperliquidPositionIndex = 0;
 
-  if (perpState) {
+  if (perpState && Array.isArray(perpState.assetPositions)) {
     for (const wrapper of perpState.assetPositions ?? []) {
       const position = wrapper.position;
       const signedSize = Number(position?.szi);
@@ -961,7 +961,7 @@ async function importHyperliquid(
   const spotMeta = spotMarket?.[0];
   const spotContexts = spotMarket?.[1] ?? [];
   let freeCollateralAssigned = false;
-  if (spotState) {
+  if (spotState && Array.isArray(spotState.balances)) {
     for (const balance of spotState.balances ?? []) {
       const baseAmount = Number(balance.total);
       const isUsdc =
@@ -1162,10 +1162,12 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       'https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails',
     ).catch(() => ({ code: 0, order_book_details: [] })),
   ]);
-  if (data.code !== 200 || !Array.isArray(data.accounts))
+  if (data.code !== 200 || !Array.isArray(data.accounts) || !data.accounts.length)
     throw new Error('Lighter did not return account data for this address.');
 
   const warnings: string[] = [];
+  if (data.accounts.some((account) => !Array.isArray(account.positions)))
+    warnings.push('Lighter perpetual positions could not be read.');
   if (!stakingPools.public_pools?.length)
     warnings.push(
       'Lighter staking metadata was unavailable, so staked LIT may not be included in this snapshot.',

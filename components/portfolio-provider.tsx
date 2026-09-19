@@ -64,6 +64,7 @@ import type {
   WalletHistoryResponse,
   WalletImportSource,
 } from '@/lib/wallet-import';
+import { localWalletQuantityDelta } from '@/lib/wallet-sync';
 import type {
   ScreenshotImportDestination,
   ScreenshotPositionImport,
@@ -80,8 +81,9 @@ type PortfolioContextValue = {
   notice: string | null;
   importProfiles: ImportProfile[];
   refreshPrices: (holdings?: Holding[]) => Promise<void>;
+  refreshPortfolio: () => Promise<void>;
   refreshVenueHistories: (force?: boolean) => Promise<void>;
-  syncImportProfile: (profileId: string) => Promise<void>;
+  syncImportProfile: (profileId: string) => Promise<boolean>;
   openAdd: (positionType?: 'spot' | 'perp') => void;
   openEdit: (holding: Holding) => void;
   openAdjust: (holding: Holding) => void;
@@ -136,6 +138,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const [defaultPositionType, setDefaultPositionType] = useState<
     'spot' | 'perp'
   >('spot');
+  const portfolioRefreshInFlight = useRef(false);
 
   const refreshVenueHistories = useCallback(
     async (
@@ -340,7 +343,10 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         portfolioRef.current?.holdings ??
         []
       ).map(normalizeHolding);
-      if (!activeHoldings.length) return;
+      if (!activeHoldings.length) {
+        setRefreshState('success');
+        return;
+      }
       setRefreshState('loading');
       try {
         const response = await fetch('/api/market', {
@@ -417,7 +423,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   );
 
   const syncImportProfile = useCallback(
-    async (profileId: string, announce = true) => {
+    async (profileId: string, announce = true, followUp = true) => {
       const profile = importProfilesRef.current.find(
         (candidate) => candidate.id === profileId,
       );
@@ -428,7 +434,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         !profile.address ||
         (profile.source !== 'hyperliquid' && profile.source !== 'lighter')
       )
-        return;
+        return false;
 
       try {
         const response = await fetch('/api/wallet/import', {
@@ -459,6 +465,20 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
           profile.source,
           data.warnings,
         );
+        const previousPerps = current.holdings.filter(
+          (holding) =>
+            holding.importProfileId === profile.id &&
+            holding.positionType === 'perp',
+        );
+        const nextPerps = nextHoldings.filter(
+          (holding) =>
+            holding.importProfileId === profile.id &&
+            holding.positionType === 'perp',
+        );
+        const nextPerpIds = new Set(nextPerps.map((holding) => holding.id));
+        const closedPerps = previousPerps.filter(
+          (holding) => !nextPerpIds.has(holding.id),
+        ).length;
         const nextProfiles = importProfilesRef.current.map((candidate) =>
           candidate.id === profile.id
             ? {
@@ -478,15 +498,18 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         };
         portfolioRef.current = nextPortfolio;
         setPortfolio(nextPortfolio);
-        window.setTimeout(() => void refreshPrices(nextHoldings, true), 0);
-        window.setTimeout(
-          () => void refreshVenueHistories(true, nextProfiles, false),
-          0,
-        );
+        if (followUp) {
+          window.setTimeout(() => void refreshPrices(nextHoldings, true), 0);
+          window.setTimeout(
+            () => void refreshVenueHistories(true, nextProfiles, false),
+            0,
+          );
+        }
         if (announce)
           setNotice(
-            `${profile.name} synchronized from ${profile.platform}. Quantities will remain fixed until you sync again.`,
+            `${profile.name} synced: ${nextPerps.length} open perpetual${nextPerps.length === 1 ? '' : 's'}${closedPerps ? `, ${closedPerps} closed` : ''}.`,
           );
+        return true;
       } catch (error) {
         if (announce)
           setNotice(
@@ -494,41 +517,62 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
               ? error.message
               : `${profile.name} could not be synchronized.`,
           );
+        return false;
       }
     },
     [refreshPrices, refreshVenueHistories],
   );
 
-  useEffect(() => {
-    if (!hydrated || !portfolioRef.current?.holdings.length) return;
-    void refreshPrices();
-  }, [hydrated, refreshPrices]);
+  const refreshPortfolio = useCallback(async () => {
+    if (portfolioRefreshInFlight.current) return;
+    portfolioRefreshInFlight.current = true;
+    setRefreshState('loading');
+    try {
+      const profiles = importProfilesRef.current.filter(
+        (profile) =>
+          (profile.source === 'hyperliquid' || profile.source === 'lighter') &&
+          Boolean(profile.address),
+      );
+      let failures = 0;
+      for (const profile of profiles) {
+        if (!(await syncImportProfile(profile.id, false, false))) failures += 1;
+      }
+      await refreshPrices();
+      if (failures) {
+        setRefreshState('warning');
+        setNotice(
+          `${failures} venue wallet${failures === 1 ? '' : 's'} could not sync. Existing positions were kept.`,
+        );
+      }
+      if (profiles.length) void refreshVenueHistories(false, undefined, false);
+    } finally {
+      portfolioRefreshInFlight.current = false;
+    }
+    // oxlint-disable-next-line react/react-compiler -- Required by exhaustive-deps; all three callbacks are stable.
+  }, [refreshPrices, refreshVenueHistories, syncImportProfile]);
 
-  const attemptedWalletSnapshotUpgrade = useRef<number | null>(null);
   useEffect(() => {
-    if (
-      attemptedWalletSnapshotUpgrade.current === WALLET_SNAPSHOT_VERSION ||
-      !hydrated
-    )
-      return;
-    const legacyProfiles = importProfilesRef.current.filter(
-      (profile) =>
-        (profile.source === 'lighter' || profile.source === 'hyperliquid') &&
-        profile.address &&
-        profile.snapshotVersion !== WALLET_SNAPSHOT_VERSION,
-    );
-    attemptedWalletSnapshotUpgrade.current = WALLET_SNAPSHOT_VERSION;
-    void (async () => {
-      for (const profile of legacyProfiles)
-        await syncImportProfile(profile.id, false);
-    })();
-  });
+    if (!hydrated) return;
+    void refreshPortfolio();
+  }, [hydrated, refreshPortfolio]);
 
   useEffect(() => {
     if (!hydrated || !portfolio?.autoRefresh) return;
-    const timer = window.setInterval(() => void refreshPrices(), 60_000);
-    return () => window.clearInterval(timer);
-  }, [hydrated, portfolio?.autoRefresh, refreshPrices]);
+    const priceTimer = window.setInterval(
+      () => {
+        if (!portfolioRefreshInFlight.current) void refreshPrices();
+      },
+      60_000,
+    );
+    const walletTimer = window.setInterval(
+      () => void refreshPortfolio(),
+      120_000,
+    );
+    return () => {
+      window.clearInterval(priceTimer);
+      window.clearInterval(walletTimer);
+    };
+  }, [hydrated, portfolio?.autoRefresh, refreshPortfolio, refreshPrices]);
 
   const saveHolding = useCallback(
     (holding: Holding) => {
@@ -991,6 +1035,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     notice,
     importProfiles,
     refreshPrices,
+    refreshPortfolio,
     refreshVenueHistories,
     syncImportProfile,
     openAdd: (positionType = 'spot') => {
@@ -1460,10 +1505,7 @@ function replaceWalletProfileSnapshot(
     if (!match) return [next];
     matchedIds.add(match.id);
     if (incompleteKinds.has(walletSnapshotKind(next))) return [match];
-    const previousSnapshotAmount = Number(match.walletSnapshotAmount);
-    const manualDelta = Number.isFinite(previousSnapshotAmount)
-      ? match.amount - previousSnapshotAmount
-      : 0;
+    const manualDelta = localWalletQuantityDelta(match);
     const amount = Math.max(0, candidate.amount + manualDelta);
     if (!(amount > 0)) return [];
     return [
@@ -1496,9 +1538,10 @@ function replaceWalletProfileSnapshot(
   const retainedManualDeltas = existing.flatMap((holding) => {
     if (matchedIds.has(holding.id)) return [];
     if (preservedIds.has(holding.id)) return [];
-    const previousSnapshotAmount = Number(holding.walletSnapshotAmount);
-    if (!Number.isFinite(previousSnapshotAmount)) return [];
-    const amount = holding.amount - previousSnapshotAmount;
+    // A venue-confirmed closed perpetual is no longer open, even when its
+    // locally edited quantity previously differed from the last snapshot.
+    if (holding.positionType === 'perp') return [];
+    const amount = localWalletQuantityDelta(holding);
     if (!(amount > 0)) return [];
     return [
       normalizeHolding({
@@ -1509,8 +1552,7 @@ function replaceWalletProfileSnapshot(
         equityMarkPrice: undefined,
         reportedRoe: undefined,
         reportedUnrealizedPnl: undefined,
-        liquidationModel:
-          holding.positionType === 'perp' ? 'estimate' : undefined,
+        liquidationModel: undefined,
         reportedLiquidationPrice: undefined,
       }),
     ];
@@ -1555,6 +1597,11 @@ function incompleteWalletSnapshotKinds(
     if (normalized.includes('spot balances could not be read'))
       kinds.add('spot');
   }
+  if (
+    source === 'lighter' &&
+    normalized.includes('perpetual positions could not be read')
+  )
+    kinds.add('perp');
   return kinds;
 }
 

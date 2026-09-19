@@ -87,7 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     analytics,
     hydrated,
     refreshState,
-    refreshPrices,
+    refreshPortfolio,
     openAdd,
     openScreenshotImport,
     setPrivacyMode,
@@ -189,17 +189,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 )}
               </button>
               <Button
-                disabled={
-                  refreshState === 'loading' || !portfolio.holdings.length
-                }
-                onClick={() => void refreshPrices()}
+                disabled={refreshState === 'loading'}
+                onClick={() => void refreshPortfolio()}
+                aria-label="Refresh prices and connected wallets"
+                title="Refresh prices and connected wallets"
                 variant="outline"
                 className="h-9 rounded-lg border-border bg-card px-3 text-muted-foreground hover:bg-muted hover:text-foreground"
               >
                 <RefreshCw
                   className={`size-3.5 ${refreshState === 'loading' ? 'animate-spin' : ''}`}
                 />
-                <span className="hidden md:inline">Refresh</span>
+                <span className="hidden md:inline">Refresh wallets</span>
               </Button>
               <Button
                 onClick={openScreenshotImport}

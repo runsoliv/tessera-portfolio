@@ -238,8 +238,8 @@ export default function WalletsPage() {
         <MetricCard
           icon={DatabaseZap}
           label="Import behavior"
-          value="One-time snapshot"
-          detail="Quantities remain locally editable"
+          value="Live venue sync"
+          detail="Lighter and Hyperliquid open/closed positions update automatically"
         />
         <MetricCard
           icon={ShieldCheck}

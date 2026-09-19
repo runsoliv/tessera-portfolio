@@ -173,13 +173,13 @@ export default function SettingsPage() {
           <div className="divide-y divide-white/[0.055] px-5">
             <SettingRow
               icon={RefreshCw}
-              title="Auto-refresh prices"
-              description="Refresh open-position quotes every 60 seconds while Tessera is open."
+              title="Auto-refresh portfolio"
+              description="Refresh prices every minute and sync Lighter and Hyperliquid open/closed positions every two minutes while Tessera is open."
               control={
                 <Switch
                   checked={portfolio.autoRefresh}
                   onCheckedChange={setAutoRefresh}
-                  aria-label="Toggle automatic price refresh"
+                  aria-label="Toggle automatic portfolio refresh"
                 />
               }
             />
