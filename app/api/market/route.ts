@@ -1,4 +1,5 @@
 import type { Holding, PriceResult } from '@/lib/portfolio';
+import { isSuspiciousSpotPriceJump } from '@/lib/price-guard';
 
 type IncomingHolding = Pick<
   Holding,
@@ -9,6 +10,7 @@ type IncomingHolding = Pick<
   | 'network'
   | 'address'
   | 'manualPrice'
+  | 'price'
   | 'positionType'
   | 'importedFrom'
   | 'marketRef'
@@ -450,6 +452,17 @@ export async function POST(request: Request) {
       },
     ),
   );
+
+  const rejectedQuotes = holdings.filter((holding) => {
+    const quote = prices[holding.id];
+    if (!quote || !isSuspiciousSpotPriceJump(holding, quote)) return false;
+    delete prices[holding.id];
+    return true;
+  });
+  if (rejectedQuotes.length)
+    warnings.push(
+      `${rejectedQuotes.length} unusually high spot quote${rejectedQuotes.length === 1 ? ' was' : 's were'} ignored; last known prices were kept.`,
+    );
 
   const unresolved = holdings
     .filter((holding) => !prices[holding.id])

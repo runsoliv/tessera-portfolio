@@ -56,6 +56,7 @@ import {
   parseVenueHistories,
   VENUE_HISTORY_VERSION,
 } from '@/lib/venue-history';
+import { isSuspiciousSpotPriceJump } from '@/lib/price-guard';
 import type {
   QuantityAdjustment,
   WalletImportCandidate,
@@ -354,12 +355,19 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
           unresolved: string[];
           warnings: string[];
         };
+        const rejectedQuoteIds = activeHoldings
+          .filter((holding) => {
+            const quote = data.prices[holding.id];
+            return quote && isSuspiciousSpotPriceJump(holding, quote);
+          })
+          .map((holding) => holding.id);
+        const rejectedQuoteSet = new Set(rejectedQuoteIds);
         setPortfolio((current) => {
           if (!current) return current;
           const updatedHoldings = current.holdings.map((holding) => {
             const normalized = normalizeHolding(holding);
             const quote = data.prices[holding.id];
-            if (!quote) return normalized;
+            if (!quote || rejectedQuoteSet.has(holding.id)) return normalized;
             return normalized.importedFrom === 'hyperliquid' &&
               quote.provider === 'Hyperliquid'
               ? {
@@ -387,10 +395,11 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
             snapshots: appendSnapshot(adjustedSnapshots, value),
           };
         });
-        if (data.unresolved.length) {
+        const retainedPrices = data.unresolved.length + rejectedQuoteIds.length;
+        if (retainedPrices) {
           setRefreshState('warning');
           setNotice(
-            `${data.unresolved.length} position${data.unresolved.length === 1 ? '' : 's'} kept the last known price.`,
+            `${retainedPrices} position${retainedPrices === 1 ? '' : 's'} kept the last known price.`,
           );
         } else {
           setRefreshState('success');
