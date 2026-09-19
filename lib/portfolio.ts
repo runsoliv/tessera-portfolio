@@ -238,6 +238,7 @@ export const PLATFORMS = [
   'Self custody',
   'Hyperliquid',
   'Lighter',
+  'Variational',
   'Robinhood',
   'Robinhood Chain',
   'Coinbase',

@@ -87,7 +87,7 @@ type PortfolioContextValue = {
   openAdd: (positionType?: 'spot' | 'perp') => void;
   openEdit: (holding: Holding) => void;
   openAdjust: (holding: Holding) => void;
-  openScreenshotImport: () => void;
+  openScreenshotImport: (platform?: 'Variational') => void;
   renameImportProfile: (id: string, name: string) => void;
   removeImportProfile: (id: string) => void;
   requestDelete: (holding: Holding) => void;
@@ -135,6 +135,9 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const [adjusting, setAdjusting] = useState<Holding | null>(null);
   const [deleting, setDeleting] = useState<Holding | null>(null);
   const [screenshotImportOpen, setScreenshotImportOpen] = useState(false);
+  const [screenshotImportPlatform, setScreenshotImportPlatform] = useState<
+    'Variational' | undefined
+  >();
   const [defaultPositionType, setDefaultPositionType] = useState<
     'spot' | 'perp'
   >('spot');
@@ -1049,7 +1052,10 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       setAddOpen(true);
     },
     openAdjust: setAdjusting,
-    openScreenshotImport: () => setScreenshotImportOpen(true),
+    openScreenshotImport: (platform) => {
+      setScreenshotImportPlatform(platform);
+      setScreenshotImportOpen(true);
+    },
     renameImportProfile: (id, name) => {
       const trimmed = name.trim().slice(0, 80);
       if (!trimmed) return;
@@ -1155,7 +1161,9 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         onAdjust={adjustQuantity}
       />
       <ScreenshotImportDialog
+        key={screenshotImportPlatform ?? 'general'}
         open={screenshotImportOpen}
+        preferredPlatform={screenshotImportPlatform}
         onOpenChange={setScreenshotImportOpen}
         onImport={importScreenshotPositions}
         importProfiles={importProfiles}

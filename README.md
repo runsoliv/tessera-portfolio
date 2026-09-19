@@ -59,6 +59,8 @@ Wallet imports are not live account connections. Re-import a wallet when you wan
 
 Screenshot parsing runs locally with Tesseract.js. Detected tickers, quantities, platforms, position types, and leverage are shown for review before anything is added. Imported assets are linked to live market pricing when a matching crypto or stock ticker can be resolved.
 
+Variational positions can be added from a screenshot or entered manually. Address-only position sync is unavailable because Variational does not publish a public wallet-positions endpoint; these positions remain locally editable and do not automatically reflect trades or closures.
+
 ## Market-data notes
 
 The dashboard uses multiple public providers, including CoinGecko, DEX Screener, Hyperliquid, Lighter, Jupiter, Blockscout, Robinhood Chain, and public stock quote endpoints. Availability and rate limits are controlled by those providers. Cached prices remain visible when a refresh temporarily fails.

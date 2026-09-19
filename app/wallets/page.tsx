@@ -219,7 +219,7 @@ export default function WalletsPage() {
         description="Copy balances from a wallet address or read positions from screenshots. Imports are one-time snapshots and remain locally editable."
         actions={
           <Button
-            onClick={openScreenshotImport}
+            onClick={() => openScreenshotImport()}
             className="h-9 rounded-xl bg-primary text-[10px] text-primary-foreground hover:bg-primary/90"
           >
             <ImageUp className="size-3.5" /> Import screenshots
@@ -350,6 +350,24 @@ export default function WalletsPage() {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => openScreenshotImport('Variational')}
+                className="flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left transition hover:border-primary/30 hover:bg-muted"
+              >
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground">
+                  <ImageUp className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[11px] font-medium text-foreground">
+                    Variational
+                  </span>
+                  <span className="mt-1 block text-[10px] text-muted-foreground">
+                    Import a positions screenshot · no address-only sync
+                  </span>
+                </span>
+                <ArrowRight className="size-3.5 text-muted-foreground" />
+              </button>
             </div>
 
             {source === 'onchain' && (

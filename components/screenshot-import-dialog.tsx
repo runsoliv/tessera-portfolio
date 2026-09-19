@@ -47,6 +47,7 @@ import {
 
 type ScreenshotImportDialogProps = {
   open: boolean;
+  preferredPlatform?: 'Variational';
   onOpenChange: (open: boolean) => void;
   onImport: (
     items: ScreenshotPositionImport[],
@@ -76,6 +77,7 @@ const MAX_FILE_BYTES = 15 * 1024 * 1024;
 
 export function ScreenshotImportDialog({
   open,
+  preferredPlatform,
   onOpenChange,
   onImport,
   importProfiles,
@@ -85,10 +87,14 @@ export function ScreenshotImportDialog({
   const workerRef = useRef<Worker | null>(null);
   const [images, setImages] = useState<ImageFile[]>([]);
   const [positions, setPositions] = useState<ReviewPosition[]>([]);
-  const [platformChoice, setPlatformChoice] = useState('Robinhood');
+  const [platformChoice, setPlatformChoice] = useState(
+    preferredPlatform ?? 'Robinhood',
+  );
   const [customPlatform, setCustomPlatform] = useState('');
   const [destinationProfileId, setDestinationProfileId] = useState('__new');
-  const [profileName, setProfileName] = useState('Robinhood');
+  const [profileName, setProfileName] = useState(
+    preferredPlatform ?? 'Robinhood',
+  );
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState('Preparing local OCR');
@@ -289,7 +295,7 @@ export function ScreenshotImportDialog({
       const combinedText = textBlocks.join('\n\n———\n\n');
       setRawText(combinedText);
       const detectedPlatform = detectPlatform(combinedText);
-      if (detectedPlatform) {
+      if (detectedPlatform && !preferredPlatform) {
         setPlatformChoice(detectedPlatform);
         setProfileName((current) =>
           !current.trim() || current === resolvedPlatform
@@ -1126,6 +1132,7 @@ function textFromBlocks(
 function detectPlatform(text: string) {
   const normalized = text.toLowerCase();
   const signatures: Array<[string, string]> = [
+    ['variational', 'Variational'],
     ['robinhood', 'Robinhood'],
     ['hyperliquid', 'Hyperliquid'],
     ['lighter', 'Lighter'],

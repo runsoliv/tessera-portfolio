@@ -202,7 +202,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="hidden md:inline">Refresh wallets</span>
               </Button>
               <Button
-                onClick={openScreenshotImport}
+                onClick={() => openScreenshotImport()}
                 variant="outline"
                 aria-label="Import position screenshots"
                 title="Import screenshots"
