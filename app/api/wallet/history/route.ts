@@ -4,6 +4,7 @@ import type { WalletHistoryResponse } from '@/lib/wallet-import';
 
 const EVM_ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 const LIGHTER_BASE_URL = 'https://mainnet.zklighter.elliot.ai';
+const ROBINHOOD_LIGHTER_BASE_URL = 'https://api.rh.lighter.xyz';
 const LIGHTER_GENESIS_SECONDS = 1_737_072_000;
 
 export async function POST(request: Request) {
@@ -104,14 +105,38 @@ async function hyperliquidHistory(address: string) {
 }
 
 async function lighterHistory(address: string) {
-  const accountUrl = new URL(`${LIGHTER_BASE_URL}/api/v1/account`);
-  accountUrl.searchParams.set('by', 'l1_address');
-  accountUrl.searchParams.set('value', address);
-  accountUrl.searchParams.set('active_only', 'false');
-  const accounts = await fetchJson<LighterAccounts>(accountUrl.toString());
-  if (accounts.code !== 200 || !Array.isArray(accounts.accounts)) {
+  const accountUrl = (baseUrl: string) => {
+    const url = new URL(`${baseUrl}/api/v1/account`);
+    url.searchParams.set('by', 'l1_address');
+    url.searchParams.set('value', address);
+    url.searchParams.set('active_only', 'false');
+    return url.toString();
+  };
+  let accounts = await fetchJson<LighterAccounts>(
+    accountUrl(LIGHTER_BASE_URL),
+  ).catch((error: unknown) => {
+    if (error instanceof Error && error.message.includes('HTTP 400'))
+      return { code: 21100 } as LighterAccounts;
+    throw error;
+  });
+  const robinhood =
+    accounts.code === 21100 ||
+    (accounts.code === 200 && !accounts.accounts?.length);
+  if (robinhood)
+    accounts = await fetchJson<LighterAccounts>(
+      accountUrl(ROBINHOOD_LIGHTER_BASE_URL),
+    ).catch((error: unknown) => {
+      if (error instanceof Error && error.message.includes('HTTP 400'))
+        return { code: 21100 } as LighterAccounts;
+      throw error;
+    });
+  if (
+    accounts.code !== 200 ||
+    !Array.isArray(accounts.accounts) ||
+    !accounts.accounts.length
+  )
     throw new Error('Lighter did not return accounts for this address.');
-  }
+  const baseUrl = robinhood ? ROBINHOOD_LIGHTER_BASE_URL : LIGHTER_BASE_URL;
 
   const indexes = Array.from(
     new Set(
@@ -121,7 +146,7 @@ async function lighterHistory(address: string) {
     ),
   ).slice(0, 25);
   const results = await Promise.allSettled(
-    indexes.map((index) => lighterAccountHistory(index)),
+    indexes.map((index) => lighterAccountHistory(index, baseUrl)),
   );
   const accountSeries = results.flatMap((result) =>
     result.status === 'fulfilled' && result.value.length ? [result.value] : [],
@@ -141,13 +166,13 @@ async function lighterHistory(address: string) {
     pnlPoints,
     fetchedAt: Date.now(),
     historyVersion: VENUE_HISTORY_VERSION,
-    provider: 'Lighter account P&L history',
+    provider: `${robinhood ? 'Robinhood Lighter' : 'Lighter'} account P&L history`,
     ...(warning ? { warning } : {}),
   };
 }
 
-async function lighterAccountHistory(index: number) {
-  const url = new URL(`${LIGHTER_BASE_URL}/api/v1/pnl`);
+async function lighterAccountHistory(index: number, baseUrl: string) {
+  const url = new URL(`${baseUrl}/api/v1/pnl`);
   url.searchParams.set('by', 'index');
   url.searchParams.set('value', String(index));
   url.searchParams.set('resolution', '1d');

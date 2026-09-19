@@ -52,8 +52,8 @@ const sources = [
   },
   {
     id: 'lighter' as const,
-    label: 'Lighter',
-    detail: 'Assets, staked LIT and perpetuals',
+    label: 'Lighter / Robinhood Lighter',
+    detail: 'Automatically finds either venue by wallet address',
     icon: Layers3,
   },
 ];
@@ -239,7 +239,7 @@ export default function WalletsPage() {
           icon={DatabaseZap}
           label="Import behavior"
           value="Live venue sync"
-          detail="Lighter and Hyperliquid open/closed positions update automatically"
+          detail="Lighter, Robinhood Lighter and Hyperliquid positions update automatically"
         />
         <MetricCard
           icon={ShieldCheck}
@@ -422,7 +422,11 @@ export default function WalletsPage() {
         <Panel className="min-h-[460px] overflow-hidden">
           <PanelHeader
             title="Import review"
-            description="Select the balances and positions to add to the portfolio"
+            description={
+              result?.network
+                ? `${result.network} · select the balances and positions to add`
+                : 'Select the balances and positions to add to the portfolio'
+            }
             aside={
               result?.items.length ? (
                 <div className="flex gap-1">

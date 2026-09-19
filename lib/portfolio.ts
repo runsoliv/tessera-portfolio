@@ -313,6 +313,9 @@ export function normalizeHolding(holding: Holding): Holding {
           holding.assetClass === 'unstaking'
           ? false
           : holding.symbol.toUpperCase() === 'USDC' ||
+            (lighterSpot &&
+              holding.network?.startsWith('Robinhood Lighter') &&
+              holding.symbol.toUpperCase() === 'USDG') ||
             (hyperliquidSpot &&
               (holding.accountMode === 'unifiedAccount' ||
                 holding.accountMode === 'portfolioMargin'))

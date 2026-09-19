@@ -268,10 +268,17 @@ export async function POST(request: Request) {
       holding.positionType === 'perp' &&
       (holding.source === 'lighter' || holding.importedFrom === 'lighter'),
   );
-  if (lighterHoldings.length) {
+  for (const robinhood of [false, true]) {
+    const venueHoldings = lighterHoldings.filter(
+      (holding) =>
+        holding.network?.startsWith('Robinhood Lighter') === robinhood,
+    );
+    if (!venueHoldings.length) continue;
     try {
       const response = await fetch(
-        'https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails',
+        robinhood
+          ? 'https://api.rh.lighter.xyz/api/v1/orderBookDetails'
+          : 'https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails',
         {
           headers: {
             Accept: 'application/json',
@@ -283,7 +290,7 @@ export async function POST(request: Request) {
       if (!response.ok) throw new Error(`Lighter returned ${response.status}`);
       const data = (await response.json()) as LighterMarketResponse;
       const markets = data.order_book_details ?? [];
-      for (const holding of lighterHoldings) {
+      for (const holding of venueHoldings) {
         const marketId = Number(holding.marketRef);
         const market = markets.find((candidate) =>
           Number.isFinite(marketId)
@@ -298,7 +305,7 @@ export async function POST(request: Request) {
           marketCap: null,
           volume24h: finiteOrNull(market?.daily_quote_token_volume),
           liquidity: null,
-          provider: 'Lighter',
+          provider: robinhood ? 'Robinhood Lighter' : 'Lighter',
           updatedAt: now,
           maintenanceMarginRate:
             finiteOrNull(market?.maintenance_margin_fraction) != null
@@ -310,7 +317,7 @@ export async function POST(request: Request) {
       warnings.push(
         error instanceof Error
           ? error.message
-          : 'Lighter marks are temporarily unavailable.',
+          : `${robinhood ? 'Robinhood Lighter' : 'Lighter'} marks are temporarily unavailable.`,
       );
     }
   }

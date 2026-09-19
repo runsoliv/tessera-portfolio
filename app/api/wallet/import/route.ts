@@ -1149,26 +1149,60 @@ async function importHyperliquid(
 }
 
 async function importLighter(address: string): Promise<WalletImportResponse> {
-  const url = new URL('https://mainnet.zklighter.elliot.ai/api/v1/account');
-  url.searchParams.set('by', 'l1_address');
-  url.searchParams.set('value', address);
-  url.searchParams.set('active_only', 'true');
-  const [data, stakingPools, marketDetails] = await Promise.all([
-    fetchJson<LighterResponse>(url.toString()),
-    fetchJson<LighterPoolsResponse>(
-      'https://mainnet.zklighter.elliot.ai/api/v1/publicPoolsMetadata?index=9007199254740991&limit=100&filter=stake',
-    ).catch(() => ({ code: 0, public_pools: [] })),
+  const mainnetUrl = 'https://mainnet.zklighter.elliot.ai';
+  const robinhoodUrl = 'https://api.rh.lighter.xyz';
+  const accountUrl = (baseUrl: string) => {
+    const url = new URL(`${baseUrl}/api/v1/account`);
+    url.searchParams.set('by', 'l1_address');
+    url.searchParams.set('value', address);
+    url.searchParams.set('active_only', 'true');
+    return url.toString();
+  };
+  let data = await fetchJson<LighterResponse>(accountUrl(mainnetUrl)).catch(
+    (error: unknown) => {
+      // Lighter returns HTTP 400 with code 21100 for an unknown L1 address.
+      if (error instanceof Error && error.message.includes('HTTP 400'))
+        return { code: 21100 } as LighterResponse;
+      throw error;
+    },
+  );
+  const robinhood =
+    data.code === 21100 || (data.code === 200 && !data.accounts?.length);
+  if (robinhood)
+    data = await fetchJson<LighterResponse>(accountUrl(robinhoodUrl)).catch(
+      (error: unknown) => {
+        if (error instanceof Error && error.message.includes('HTTP 400'))
+          return { code: 21100 } as LighterResponse;
+        throw error;
+      },
+    );
+  if (
+    data.code !== 200 ||
+    !Array.isArray(data.accounts) ||
+    !data.accounts.length
+  )
+    throw new Error(
+      'No Lighter or Robinhood Lighter account was found for this address.',
+    );
+
+  const baseUrl = robinhood ? robinhoodUrl : mainnetUrl;
+  const venueName = robinhood ? 'Robinhood Lighter' : 'Lighter';
+  const stableSymbol = robinhood ? 'USDG' : 'USDC';
+  const [stakingPools, marketDetails] = await Promise.all([
+    robinhood
+      ? Promise.resolve({ code: 200, public_pools: [] } as LighterPoolsResponse)
+      : fetchJson<LighterPoolsResponse>(
+          `${baseUrl}/api/v1/publicPoolsMetadata?index=9007199254740991&limit=100&filter=stake`,
+        ).catch(() => ({ code: 0, public_pools: [] })),
     fetchJson<LighterMarketResponse>(
-      'https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails',
+      `${baseUrl}/api/v1/orderBookDetails`,
     ).catch(() => ({ code: 0, order_book_details: [] })),
   ]);
-  if (data.code !== 200 || !Array.isArray(data.accounts) || !data.accounts.length)
-    throw new Error('Lighter did not return account data for this address.');
 
   const warnings: string[] = [];
   if (data.accounts.some((account) => !Array.isArray(account.positions)))
-    warnings.push('Lighter perpetual positions could not be read.');
-  if (!stakingPools.public_pools?.length)
+    warnings.push(`${venueName} perpetual positions could not be read.`);
+  if (!robinhood && !stakingPools.public_pools?.length)
     warnings.push(
       'Lighter staking metadata was unavailable, so staked LIT may not be included in this snapshot.',
     );
@@ -1189,10 +1223,11 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
     ]),
   );
   const lighterTokenPrice = positiveNumber(
-    (marketDetails.order_book_details ?? []).find((market) =>
-      String(market.symbol ?? '')
-        .toUpperCase()
-        .trim() === 'LIT',
+    (marketDetails.order_book_details ?? []).find(
+      (market) =>
+        String(market.symbol ?? '')
+          .toUpperCase()
+          .trim() === 'LIT',
     )?.mark_price,
   );
   const stakingBalances = new Map<
@@ -1237,7 +1272,7 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
     for (const asset of account.assets ?? []) {
       const symbol = cleanSymbol(asset.symbol);
       const amount = Number(asset.balance);
-      if (!symbol || symbol === 'USDC' || !(amount > 0)) continue;
+      if (!symbol || symbol === stableSymbol || !(amount > 0)) continue;
       // Margin-enabled assets are already represented in the account's USD
       // equity and available balance. Importing them again would double-count
       // the same collateral. Disabled balances remain standalone spot assets.
@@ -1321,9 +1356,9 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
         amount,
         positionType: 'perp',
         platform: 'Lighter',
-        network: `Lighter · #${accountIndex}`,
+        network: `${venueName} · #${accountIndex}`,
         priceSource: 'lighter',
-        provider: 'Lighter snapshot',
+        provider: `${venueName} snapshot`,
         price,
         estimatedValue: equityOverride,
         coinId,
@@ -1350,15 +1385,15 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
   }
 
   if (availableUsdc > 0) {
-    spotBalances.set('USDC', {
+    spotBalances.set(stableSymbol, {
       amount: availableUsdc,
-      name: 'USD Coin',
-      coinId: 'usd-coin',
+      name: robinhood ? 'USDG' : 'USD Coin',
+      coinId: robinhood ? undefined : 'usd-coin',
       collateralEligible: true,
     });
   }
   for (const [symbol, balance] of spotBalances) {
-    const price = symbol === 'USDC' ? 1 : undefined;
+    const price = symbol === stableSymbol ? 1 : undefined;
     items.push({
       id: `lighter:spot:${symbol}`,
       name: balance.name,
@@ -1367,9 +1402,9 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
       positionType: 'spot',
       assetClass: 'spot',
       platform: 'Lighter',
-      network: 'Lighter',
+      network: venueName,
       priceSource: balance.coinId ? 'coingecko' : 'manual',
-      provider: 'Lighter snapshot',
+      provider: `${venueName} snapshot`,
       price,
       estimatedValue: price ? balance.amount * price : undefined,
       coinId: balance.coinId,
@@ -1431,9 +1466,9 @@ async function importLighter(address: string): Promise<WalletImportResponse> {
 
   if (data.accounts.length > 1)
     warnings.push(
-      `Combined spot balances from ${data.accounts.length} Lighter accounts. Perpetuals remain separated by account.`,
+      `Combined spot balances from ${data.accounts.length} ${venueName} accounts. Perpetuals remain separated by account.`,
     );
-  return response('lighter', address, items, warnings, 'Lighter');
+  return response('lighter', address, items, warnings, venueName);
 }
 
 function response(
