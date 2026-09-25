@@ -6,12 +6,15 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   Calculator,
+  CheckCircle2,
   Clock3,
   ExternalLink,
+  Gauge,
   RefreshCw,
   Search,
   ShieldAlert,
   Sparkles,
+  TimerReset,
   TrendingUp,
   Wifi,
 } from 'lucide-react';
@@ -24,6 +27,7 @@ import {
 } from '@/components/page-primitives';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Table,
@@ -36,7 +40,10 @@ import {
 import {
   estimateFundingCarry,
   FUNDING_VENUES,
+  nextFundingBoundary,
+  type FundingHistoryPoint,
   type FundingOpportunity,
+  type FundingQuote,
   type FundingVenue,
 } from '@/lib/funding-arb';
 
@@ -47,6 +54,9 @@ type FundingResponse = {
   warnings: string[];
 };
 
+type TrackedSpread = { timestamp: number; spread8h: number };
+type TrackedSpreads = Record<string, TrackedSpread[]>;
+
 export default function FundingArbPage() {
   const [data, setData] = useState<FundingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,6 +66,26 @@ export default function FundingArbPage() {
   const [notionalPerLeg, setNotionalPerLeg] = useState(10_000);
   const [holdHours, setHoldHours] = useState(24);
   const [costBpsPerFill, setCostBpsPerFill] = useState(2);
+  const [rateRetentionPct, setRateRetentionPct] = useState(50);
+  const [clock, setClock] = useState(() => Date.now());
+  const [historyByMarket, setHistoryByMarket] = useState<
+    Record<number, FundingHistoryPoint[]>
+  >({});
+  const [trackedSpreads, setTrackedSpreads] = useState<TrackedSpreads>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      return JSON.parse(
+        window.localStorage.getItem('tessera-funding-spreads-v1') ?? '{}',
+      ) as TrackedSpreads;
+    } catch {
+      return {};
+    }
+  });
+  const [executionChecks, setExecutionChecks] = useState({
+    symbol: '',
+    bothLegsFilled: false,
+    holdThroughSettlement: false,
+  });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -66,6 +96,35 @@ export default function FundingArbPage() {
         throw new Error(`Funding feed returned ${response.status}`);
       const nextData = (await response.json()) as FundingResponse;
       setData(nextData);
+      setTrackedSpreads((current) => {
+        const next = { ...current };
+        const cutoff = nextData.fetchedAt - 8 * 60 * 60 * 1_000;
+        for (const opportunity of nextData.opportunities) {
+          const previous = (next[opportunity.symbol] ?? []).filter(
+            (point) => point.timestamp >= cutoff,
+          );
+          const last = previous.at(-1);
+          next[opportunity.symbol] =
+            last?.timestamp === nextData.fetchedAt
+              ? previous
+              : [
+                  ...previous,
+                  {
+                    timestamp: nextData.fetchedAt,
+                    spread8h: opportunity.spread8h,
+                  },
+                ].slice(-480);
+        }
+        try {
+          window.localStorage.setItem(
+            'tessera-funding-spreads-v1',
+            JSON.stringify(next),
+          );
+        } catch {
+          // Live tracking still works when browser storage is unavailable.
+        }
+        return next;
+      });
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -86,6 +145,11 @@ export default function FundingArbPage() {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const filtered = useMemo(() => {
     const search = query.trim().toUpperCase();
     return (data?.opportunities ?? []).filter(
@@ -104,6 +168,26 @@ export default function FundingArbPage() {
         executionCostBpsPerFill: costBpsPerFill,
       })
     : null;
+  const lighterQuote = selected?.quotes.find(
+    (quote) => quote.venue === 'Robinhood Lighter',
+  );
+  const lighterMarketId = lighterQuote?.marketId ?? null;
+  const lighterHistory =
+    lighterMarketId === null ? [] : (historyByMarket[lighterMarketId] ?? []);
+  const trackedSelected = selected
+    ? (trackedSpreads[selected.symbol] ?? [])
+    : [];
+  const retentionRatio = Math.min(100, Math.max(0, rateRetentionPct)) / 100;
+  const conservativeNet = selectedEstimate
+    ? selectedEstimate.grossCarry * retentionRatio -
+      selectedEstimate.executionCost
+    : null;
+  const costCoverage = selectedEstimate
+    ? selectedEstimate.executionCost > 0
+      ? selectedEstimate.grossCarry / selectedEstimate.executionCost
+      : Number.POSITIVE_INFINITY
+    : 0;
+  const sameCheckedSymbol = executionChecks.symbol === selected?.symbol;
   const profitableCount = filtered.filter(
     (opportunity) =>
       estimateFundingCarry({
@@ -113,6 +197,32 @@ export default function FundingArbPage() {
         executionCostBpsPerFill: costBpsPerFill,
       }).netCarry > 0,
   ).length;
+
+  useEffect(() => {
+    if (lighterMarketId === null || historyByMarket[lighterMarketId]) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/funding-arb/history?marketId=${lighterMarketId}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error('History unavailable');
+          return (await response.json()) as { points: FundingHistoryPoint[] };
+        })
+        .then((payload) =>
+          setHistoryByMarket((current) => ({
+            ...current,
+            [lighterMarketId]: payload.points,
+          })),
+        )
+        .catch(() => undefined);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [historyByMarket, lighterMarketId]);
 
   return (
     <>
@@ -207,6 +317,15 @@ export default function FundingArbPage() {
               min={0}
               step={0.1}
               onChange={setCostBpsPerFill}
+            />
+            <NumberField
+              label="Stress-case rate retained"
+              suffix="%"
+              value={rateRetentionPct}
+              min={0}
+              max={100}
+              step={5}
+              onChange={setRateRetentionPct}
             />
             <p className="text-[10px] leading-4 text-muted-foreground sm:col-span-3 xl:col-span-1">
               Capital required depends on each venue&apos;s leverage and margin
@@ -307,6 +426,145 @@ export default function FundingArbPage() {
             </div>
           )}
         </div>
+
+        {selected && selectedEstimate ? (
+          <div className="border-t border-border p-5">
+            <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-[13px] font-semibold">
+                  Settlement readiness
+                </h2>
+                <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                  Payment clocks are separate. A displayed rate can still move
+                  before either venue settles.
+                </p>
+              </div>
+              <Badge variant="outline" className="w-fit">
+                <TimerReset /> Live countdowns
+              </Badge>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              {selected.quotes.map((quote) => (
+                <SettlementCard
+                  key={quote.venue}
+                  quote={quote}
+                  now={clock}
+                  lighterHistory={
+                    quote.venue === 'Robinhood Lighter' ? lighterHistory : []
+                  }
+                  tracked={trackedSelected}
+                />
+              ))}
+            </div>
+
+            <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr]">
+              <div className="rounded-xl border border-border bg-muted/25 p-4">
+                <div className="flex items-center gap-2">
+                  <Gauge className="size-4 text-primary" />
+                  <h3 className="text-[12px] font-semibold">
+                    Carry stress test
+                  </h3>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <CompactStat
+                    label="Current net"
+                    value={signedMoney(selectedEstimate.netCarry)}
+                  />
+                  <CompactStat
+                    label={`${rateRetentionPct}% rate net`}
+                    value={signedMoney(conservativeNet ?? 0)}
+                  />
+                  <CompactStat
+                    label="Gross / costs"
+                    value={
+                      Number.isFinite(costCoverage)
+                        ? `${costCoverage.toFixed(1)}×`
+                        : 'No costs'
+                    }
+                  />
+                </div>
+                <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
+                  The stress case assumes only {rateRetentionPct}% of the
+                  current spread survives for the full hold. Prefer a positive
+                  stress result with comfortable room over four fills.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/25 p-4">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-4 text-primary" />
+                  <h3 className="text-[12px] font-semibold">
+                    Two-leg execution check
+                  </h3>
+                </div>
+                <div className="mt-3 space-y-3">
+                  <ReadinessRow
+                    ready={costCoverage >= 3}
+                    label="Expected funding covers all four fill costs by 3× or more"
+                    detail={
+                      Number.isFinite(costCoverage)
+                        ? `${costCoverage.toFixed(1)}×`
+                        : 'No costs'
+                    }
+                  />
+                  <ReadinessRow
+                    ready={(conservativeNet ?? 0) > 0}
+                    label={`${rateRetentionPct}% rate-retention case stays profitable`}
+                    detail={signedMoney(conservativeNet ?? 0)}
+                  />
+                  <ReadinessRow
+                    ready={
+                      trackedSelected.length < 2
+                        ? null
+                        : Math.min(
+                            ...trackedSelected.map((point) => point.spread8h),
+                          ) > 0
+                    }
+                    label="Spread stayed positive across observed refreshes"
+                    detail={
+                      trackedSelected.length < 2
+                        ? 'Tracking'
+                        : `${trackedSelected.length} samples`
+                    }
+                  />
+                  <CheckRow
+                    checked={
+                      sameCheckedSymbol && executionChecks.bothLegsFilled
+                    }
+                    onCheckedChange={(checked) =>
+                      setExecutionChecks((current) => ({
+                        symbol: selected.symbol,
+                        bothLegsFilled: checked,
+                        holdThroughSettlement:
+                          current.symbol === selected.symbol
+                            ? current.holdThroughSettlement
+                            : false,
+                      }))
+                    }
+                    label="Both equal-notional legs are filled"
+                  />
+                  <CheckRow
+                    checked={
+                      sameCheckedSymbol && executionChecks.holdThroughSettlement
+                    }
+                    onCheckedChange={(checked) =>
+                      setExecutionChecks((current) => ({
+                        symbol: selected.symbol,
+                        bothLegsFilled:
+                          current.symbol === selected.symbol
+                            ? current.bothLegsFilled
+                            : false,
+                        holdThroughSettlement: checked,
+                      }))
+                    }
+                    label="I will verify both legs remain open through settlement"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </Panel>
 
       <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -529,6 +787,7 @@ function NumberField({
   label,
   value,
   min,
+  max,
   step,
   prefix,
   suffix,
@@ -537,6 +796,7 @@ function NumberField({
   label: string;
   value: number;
   min: number;
+  max?: number;
   step: number;
   prefix?: string;
   suffix?: string;
@@ -555,9 +815,15 @@ function NumberField({
           type="number"
           value={value}
           min={min}
+          max={max}
           step={step}
           onChange={(event) =>
-            onChange(Math.max(min, Number(event.target.value) || 0))
+            onChange(
+              Math.min(
+                max ?? Number.POSITIVE_INFINITY,
+                Math.max(min, Number(event.target.value) || 0),
+              ),
+            )
           }
           className="min-w-0 flex-1 bg-transparent px-2 font-mono text-[13px] font-semibold outline-none"
         />
@@ -565,6 +831,132 @@ function NumberField({
           <span className="text-[10px] text-muted-foreground">{suffix}</span>
         )}
       </div>
+    </label>
+  );
+}
+
+function SettlementCard({
+  quote,
+  now,
+  lighterHistory,
+  tracked,
+}: {
+  quote: FundingQuote;
+  now: number;
+  lighterHistory: FundingHistoryPoint[];
+  tracked: TrackedSpread[];
+}) {
+  const nextPayment = nextFundingBoundary(now, quote.intervalSeconds);
+  const recentAverage = lighterHistory.length
+    ? lighterHistory.reduce((sum, point) => sum + point.nativeRate, 0) /
+      lighterHistory.length
+    : null;
+  const observedMinimum = tracked.length
+    ? Math.min(...tracked.map((point) => point.spread8h))
+    : null;
+  const observedMaximum = tracked.length
+    ? Math.max(...tracked.map((point) => point.spread8h))
+    : null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[12px] font-semibold">{quote.venue}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            {quote.venue === 'Robinhood Lighter'
+              ? 'Hourly discrete settlement'
+              : `${formatInterval(quote.intervalSeconds)} discrete settlement`}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="font-mono text-[16px] font-semibold text-primary">
+            {formatCountdown(nextPayment - now)}
+          </p>
+          <p className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+            estimated next UTC boundary
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border/70 pt-3 sm:grid-cols-3">
+        <CompactStat
+          label="Current native rate"
+          value={`${formatRate(quote.nativeRate)} / ${formatInterval(quote.intervalSeconds)}`}
+        />
+        <CompactStat
+          label="8h equivalent"
+          value={formatRate(quote.fundingRate8h)}
+        />
+        {quote.venue === 'Robinhood Lighter' ? (
+          <CompactStat
+            label="24h settled average"
+            value={
+              recentAverage === null
+                ? 'Loading…'
+                : `${formatRate(recentAverage)} / 1h`
+            }
+          />
+        ) : (
+          <CompactStat
+            label="Observed cross spread"
+            value={
+              observedMinimum === null || observedMaximum === null
+                ? 'Tracking now'
+                : tracked.length < 2
+                  ? `${formatRate(observedMinimum)} now`
+                  : `${formatRate(observedMinimum)}–${formatRate(observedMaximum)}`
+            }
+          />
+        )}
+      </div>
+      <p className="mt-3 text-[9px] leading-4 text-muted-foreground">
+        {quote.venue === 'Robinhood Lighter'
+          ? lighterHistory.length
+            ? `${lighterHistory.length} settled hourly payments loaded for context; the current rate is not guaranteed.`
+            : 'Recent settled payments are loading; the current rate is not guaranteed.'
+          : tracked.length > 1
+            ? `${tracked.length} live spread observations retained on this device. Variational does not expose settled history in this feed.`
+            : 'Live stability tracking starts now and is retained on this device.'}
+      </p>
+    </div>
+  );
+}
+
+function ReadinessRow({
+  ready,
+  label,
+  detail,
+}: {
+  ready: boolean | null;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex items-center gap-2.5 text-[10px]">
+      <span
+        className={`size-2 rounded-full ${ready === null ? 'bg-[var(--warning)]' : ready ? 'bg-[var(--positive)]' : 'bg-[var(--negative)]'}`}
+      />
+      <span className="min-w-0 flex-1 text-muted-foreground">{label}</span>
+      <span className="shrink-0 font-mono font-semibold text-foreground">
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+function CheckRow({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  label: string;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2.5 text-[10px] text-muted-foreground">
+      <Checkbox checked={checked} onCheckedChange={onCheckedChange} />
+      <span>{label}</span>
     </label>
   );
 }
@@ -641,6 +1033,23 @@ function formatDuration(hours: number) {
   if (hours < 1) return `${Math.max(0, hours * 60).toFixed(0)}m`;
   if (hours < 48) return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
   return `${(hours / 24).toFixed(1)}d`;
+}
+
+function formatInterval(seconds: number) {
+  const hours = seconds / 3_600;
+  return hours < 1
+    ? `${Math.round(seconds / 60)}m`
+    : `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)}h`;
+}
+
+function formatCountdown(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
 }
 
 function formatClock(timestamp: number) {

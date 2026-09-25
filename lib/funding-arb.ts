@@ -5,6 +5,7 @@ export type FundingVenue = (typeof FUNDING_VENUES)[number];
 export type FundingQuote = {
   venue: FundingVenue;
   symbol: string;
+  marketId: number | null;
   fundingRate8h: number;
   nativeRate: number;
   intervalSeconds: number;
@@ -27,9 +28,22 @@ export type FundingOpportunity = {
 };
 
 export type LighterFundingRate = {
+  market_id?: unknown;
   exchange?: unknown;
   symbol?: unknown;
   rate?: unknown;
+};
+
+export type LighterFundingPayment = {
+  timestamp?: unknown;
+  rate?: unknown;
+  direction?: unknown;
+};
+
+export type FundingHistoryPoint = {
+  timestamp: number;
+  nativeRate: number;
+  fundingRate8h: number;
 };
 
 export type LighterMarket = {
@@ -84,14 +98,17 @@ export function normalizeLighterQuotes(
     const market = marketBySymbol.get(symbol);
     if (!symbol || !market) continue;
 
-    // Lighter's comparison endpoint reports every venue on an 8h-equivalent
-    // basis, even when the underlying venue settles more frequently.
+    // The comparison endpoint is 8h-equivalent. RH Lighter itself settles
+    // hourly, so retain both representations rather than labeling 8h as the
+    // native payment interval.
+    const fundingRate8h = Number(rate.rate);
     quotes.set(symbol, {
       venue,
       symbol,
-      fundingRate8h: Number(rate.rate),
-      nativeRate: Number(rate.rate),
-      intervalSeconds: 28_800,
+      marketId: finiteOrNull(rate.market_id),
+      fundingRate8h,
+      nativeRate: fundingRate8h / 8,
+      intervalSeconds: 3_600,
       markPrice: finiteOrNull(market.mark_price),
       openInterest: finiteOrNull(market.open_interest),
       volume24h: finiteOrNull(market.daily_quote_token_volume),
@@ -136,6 +153,7 @@ export function normalizeVariationalQuotes(
     quotes.set(symbol, {
       venue: 'Variational',
       symbol,
+      marketId: null,
       fundingRate8h: nativeRate * (28_800 / intervalSeconds),
       nativeRate,
       intervalSeconds,
@@ -150,6 +168,37 @@ export function normalizeVariationalQuotes(
   }
 
   return [...quotes.values()];
+}
+
+export function normalizeLighterFundingHistory(
+  payments: LighterFundingPayment[],
+): FundingHistoryPoint[] {
+  return payments
+    .filter(
+      (payment) =>
+        isFiniteNumber(payment.timestamp) && isFiniteNumber(payment.rate),
+    )
+    .map((payment) => {
+      const magnitude = Math.abs(Number(payment.rate)) / 100;
+      const direction =
+        payment.direction === 'short'
+          ? -1
+          : payment.direction === 'long'
+            ? 1
+            : Math.sign(Number(payment.rate)) || 1;
+      const nativeRate = magnitude * direction;
+      return {
+        timestamp: Number(payment.timestamp) * 1_000,
+        nativeRate,
+        fundingRate8h: nativeRate * 8,
+      };
+    })
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export function nextFundingBoundary(now: number, intervalSeconds: number) {
+  const intervalMs = Math.max(1, intervalSeconds) * 1_000;
+  return (Math.floor(now / intervalMs) + 1) * intervalMs;
 }
 
 export function buildFundingOpportunities(

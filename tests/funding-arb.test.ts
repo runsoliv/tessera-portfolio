@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   buildFundingOpportunities,
   estimateFundingCarry,
+  nextFundingBoundary,
   normalizeLighterQuotes,
+  normalizeLighterFundingHistory,
   normalizeVariationalQuotes,
 } from '../lib/funding-arb.ts';
 
@@ -35,7 +37,21 @@ void test('normalizes Lighter and Variational rates to an 8h basis', () => {
   );
 
   assert.equal(lighter[0].fundingRate8h, 0.0001);
+  assert.equal(lighter[0].nativeRate, 0.0000125);
+  assert.equal(lighter[0].intervalSeconds, 3_600);
   assert.equal(variational[0].fundingRate8h, 0.0004);
+});
+
+void test('normalizes settled hourly Lighter payments and UTC boundaries', () => {
+  const points = normalizeLighterFundingHistory([
+    { timestamp: 100, rate: '0.01', direction: 'long' },
+    { timestamp: 200, rate: '0.02', direction: 'short' },
+  ]);
+
+  assert.equal(points[0].nativeRate, 0.0001);
+  assert.equal(points[0].fundingRate8h, 0.0008);
+  assert.equal(points[1].nativeRate, -0.0002);
+  assert.equal(nextFundingBoundary(3_600_001, 3_600), 7_200_000);
 });
 
 void test('chooses the lower-rate long and higher-rate short', () => {
@@ -43,6 +59,7 @@ void test('chooses the lower-rate long and higher-rate short', () => {
     {
       venue: 'Robinhood Lighter',
       symbol: 'ETH',
+      marketId: 1,
       fundingRate8h: -0.0002,
       nativeRate: -0.0002,
       intervalSeconds: 28_800,
@@ -54,6 +71,7 @@ void test('chooses the lower-rate long and higher-rate short', () => {
     {
       venue: 'Variational',
       symbol: 'ETH',
+      marketId: null,
       fundingRate8h: 0.0001,
       nativeRate: 0.0001,
       intervalSeconds: 28_800,
@@ -75,6 +93,7 @@ void test('subtracts four fills from the funding carry estimate', () => {
     {
       venue: 'Robinhood Lighter',
       symbol: 'SOL',
+      marketId: 2,
       fundingRate8h: 0,
       nativeRate: 0,
       intervalSeconds: 28_800,
@@ -86,6 +105,7 @@ void test('subtracts four fills from the funding carry estimate', () => {
     {
       venue: 'Variational',
       symbol: 'SOL',
+      marketId: null,
       fundingRate8h: 0.001,
       nativeRate: 0.001,
       intervalSeconds: 28_800,
