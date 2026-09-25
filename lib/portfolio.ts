@@ -84,6 +84,17 @@ export type Holding = {
   color: string;
 };
 
+export function usesLighterVenuePrice(
+  holding: Pick<Holding, 'source' | 'importedFrom' | 'positionType' | 'symbol'>,
+) {
+  const lighter =
+    holding.source === 'lighter' || holding.importedFrom === 'lighter';
+  return (
+    lighter &&
+    (holding.positionType === 'perp' || holding.symbol.toUpperCase() === 'LIT')
+  );
+}
+
 export type PriceResult = {
   price: number;
   change24h: number | null;

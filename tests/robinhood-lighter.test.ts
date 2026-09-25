@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeHolding, type Holding } from '../lib/portfolio.ts';
+import {
+  normalizeHolding,
+  usesLighterVenuePrice,
+  type Holding,
+} from '../lib/portfolio.ts';
 
 void test('keeps Robinhood Lighter USDG as available venue collateral', () => {
   const holding: Holding = {
@@ -22,5 +26,24 @@ void test('keeps Robinhood Lighter USDG as available venue collateral', () => {
   assert.equal(
     normalizeHolding({ ...holding, network: 'Lighter' }).collateralEligible,
     false,
+  );
+});
+
+void test('prices imported liquid and staked LIT from the Lighter venue', () => {
+  const base = {
+    source: 'lighter' as const,
+    importedFrom: 'lighter' as const,
+    positionType: 'spot' as const,
+  };
+
+  assert.equal(usesLighterVenuePrice({ ...base, symbol: 'LIT' }), true);
+  assert.equal(usesLighterVenuePrice({ ...base, symbol: 'AAVE' }), false);
+  assert.equal(
+    usesLighterVenuePrice({
+      ...base,
+      positionType: 'perp',
+      symbol: 'BTC',
+    }),
+    true,
   );
 });

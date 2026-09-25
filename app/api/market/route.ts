@@ -1,4 +1,8 @@
-import type { Holding, PriceResult } from '@/lib/portfolio';
+import {
+  usesLighterVenuePrice,
+  type Holding,
+  type PriceResult,
+} from '@/lib/portfolio';
 import { isSuspiciousSpotPriceJump } from '@/lib/price-guard';
 
 type IncomingHolding = Pick<
@@ -263,11 +267,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const lighterHoldings = holdings.filter(
-    (holding) =>
-      holding.positionType === 'perp' &&
-      (holding.source === 'lighter' || holding.importedFrom === 'lighter'),
-  );
+  const lighterHoldings = holdings.filter(usesLighterVenuePrice);
   for (const robinhood of [false, true]) {
     const venueHoldings = lighterHoldings.filter(
       (holding) =>
