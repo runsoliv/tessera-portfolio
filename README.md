@@ -14,6 +14,7 @@ Tessera is a local-first portfolio dashboard for crypto, stocks, staked assets, 
 - Live crypto and stock pricing with provider fallbacks
 - Portfolio equity, exposure, margin, leverage, liquidation, and platform analytics
 - Whole-portfolio cumulative P&L and daily gain/loss bars with persistent custom ranges
+- Live funding-rate arbitrage scanner and carry calculator for Lighter, Robinhood Lighter, and Variational
 - Price targets, target-value modeling, position adjustments, and a configurable dust cutoff
 - Light and dark themes
 - Browser-local persistence with JSON backup and restore

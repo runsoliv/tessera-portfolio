@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useSyncExternalStore } from 'react';
 import {
   Activity,
+  ArrowLeftRight,
   CalendarDays,
   ChartNoAxesCombined,
   CircleGauge,
@@ -42,6 +43,7 @@ const navItems = [
   { href: '/targets', label: 'Targets', icon: Crosshair },
   { href: '/analytics', label: 'Analytics', icon: CircleGauge },
   { href: '/calendar', label: 'P&L Calendar', icon: CalendarDays },
+  { href: '/funding-arb', label: 'Funding Arb', icon: ArrowLeftRight },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -77,6 +79,10 @@ const pageMeta: Record<string, { title: string; eyebrow: string }> = {
     eyebrow: 'Allocation & performance',
   },
   '/calendar': { title: 'P&L calendar', eyebrow: 'UTC performance journal' },
+  '/funding-arb': {
+    title: 'Funding arbitrage',
+    eyebrow: 'Live cross-venue scanner',
+  },
   '/settings': { title: 'Local preferences', eyebrow: 'Privacy & data' },
 };
 
@@ -264,7 +270,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </p>
               <p>
                 Local storage & OCR · CoinGecko · Yahoo Finance · Blockscout ·
-                Hyperliquid · Lighter
+                Hyperliquid · Lighter · Variational
               </p>
             </footer>
           </div>
@@ -273,7 +279,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <nav
         aria-label="Mobile navigation"
-        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-9 rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
+        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-10 rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
       >
         {navItems.map((item) => {
           const Icon = item.icon;
