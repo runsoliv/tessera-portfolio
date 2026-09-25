@@ -7,7 +7,6 @@ import {
   type VariationalListing,
 } from '@/lib/funding-arb';
 
-const LIGHTER_BASE_URL = 'https://mainnet.zklighter.elliot.ai/api/v1';
 const ROBINHOOD_LIGHTER_BASE_URL = 'https://api.rh.lighter.xyz/api/v1';
 const VARIATIONAL_STATS_URL =
   'https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/stats';
@@ -19,41 +18,23 @@ type VariationalStatsResponse = { listings?: VariationalListing[] };
 export async function GET() {
   const fetchedAt = Date.now();
   const warnings: string[] = [];
-  const [lighterRates, lighterMarkets, robinhoodRates, robinhoodMarkets, vari] =
-    await Promise.all([
-      fetchJson<LighterRatesResponse>(
-        `${LIGHTER_BASE_URL}/funding-rates`,
-        'Lighter funding',
-        warnings,
-      ),
-      fetchJson<LighterMarketsResponse>(
-        `${LIGHTER_BASE_URL}/orderBookDetails`,
-        'Lighter markets',
-        warnings,
-      ),
-      fetchJson<LighterRatesResponse>(
-        `${ROBINHOOD_LIGHTER_BASE_URL}/funding-rates`,
-        'Robinhood Lighter funding',
-        warnings,
-      ),
-      fetchJson<LighterMarketsResponse>(
-        `${ROBINHOOD_LIGHTER_BASE_URL}/orderBookDetails`,
-        'Robinhood Lighter markets',
-        warnings,
-      ),
-      fetchJson<VariationalStatsResponse>(
-        VARIATIONAL_STATS_URL,
-        'Variational funding',
-        warnings,
-      ),
-    ]);
-
-  const lighterQuotes = normalizeLighterQuotes(
-    'Lighter',
-    lighterRates?.funding_rates ?? [],
-    lighterMarkets?.order_book_details ?? [],
-    fetchedAt,
-  );
+  const [robinhoodRates, robinhoodMarkets, vari] = await Promise.all([
+    fetchJson<LighterRatesResponse>(
+      `${ROBINHOOD_LIGHTER_BASE_URL}/funding-rates`,
+      'Robinhood Lighter funding',
+      warnings,
+    ),
+    fetchJson<LighterMarketsResponse>(
+      `${ROBINHOOD_LIGHTER_BASE_URL}/orderBookDetails`,
+      'Robinhood Lighter markets',
+      warnings,
+    ),
+    fetchJson<VariationalStatsResponse>(
+      VARIATIONAL_STATS_URL,
+      'Variational funding',
+      warnings,
+    ),
+  ]);
   const robinhoodQuotes = normalizeLighterQuotes(
     'Robinhood Lighter',
     robinhoodRates?.funding_rates ?? [],
@@ -64,14 +45,13 @@ export async function GET() {
     vari?.listings ?? [],
     fetchedAt,
   );
-  const quotes = [...lighterQuotes, ...robinhoodQuotes, ...variationalQuotes];
+  const quotes = [...robinhoodQuotes, ...variationalQuotes];
 
   return Response.json(
     {
       fetchedAt,
       opportunities: buildFundingOpportunities(quotes),
       sources: [
-        { venue: 'Lighter', markets: lighterQuotes.length },
         { venue: 'Robinhood Lighter', markets: robinhoodQuotes.length },
         { venue: 'Variational', markets: variationalQuotes.length },
       ],

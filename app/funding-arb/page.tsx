@@ -52,7 +52,6 @@ export default function FundingArbPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [threeVenuesOnly, setThreeVenuesOnly] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [notionalPerLeg, setNotionalPerLeg] = useState(10_000);
   const [holdHours, setHoldHours] = useState(24);
@@ -90,11 +89,9 @@ export default function FundingArbPage() {
   const filtered = useMemo(() => {
     const search = query.trim().toUpperCase();
     return (data?.opportunities ?? []).filter(
-      (opportunity) =>
-        (!search || opportunity.symbol.includes(search)) &&
-        (!threeVenuesOnly || opportunity.quotes.length === 3),
+      (opportunity) => !search || opportunity.symbol.includes(search),
     );
-  }, [data?.opportunities, query, threeVenuesOnly]);
+  }, [data?.opportunities, query]);
   const selected =
     filtered.find((opportunity) => opportunity.symbol === selectedSymbol) ??
     filtered[0] ??
@@ -122,7 +119,7 @@ export default function FundingArbPage() {
       <PageIntro
         eyebrow="Live cross-venue scanner"
         title="Funding rate arbitrage"
-        description="Compare matching perpetuals on Lighter, Robinhood Lighter and Variational. Rates are normalized to an 8-hour basis, then translated into a two-leg carry estimate."
+        description="Compare matching perpetuals on Robinhood Lighter and Variational. Rates are normalized to an 8-hour basis, then translated into a two-leg carry estimate."
         actions={
           <Button
             type="button"
@@ -304,7 +301,7 @@ export default function FundingArbPage() {
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   {loading
                     ? 'The live venue feeds are loading.'
-                    : 'Try showing pairs available on any two venues.'}
+                    : 'No pair is currently listed on both venues.'}
                 </p>
               </div>
             </div>
@@ -317,11 +314,7 @@ export default function FundingArbPage() {
           icon={ArrowLeftRight}
           label="Common pairs"
           value={String(filtered.length)}
-          detail={
-            threeVenuesOnly
-              ? 'Listed on all three venues'
-              : 'Listed on at least two venues'
-          }
+          detail="Listed on both requested venues"
           tone="accent"
         />
         <MetricCard
@@ -360,7 +353,7 @@ export default function FundingArbPage() {
             </span>
           }
         />
-        <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="border-b border-border px-5 py-4">
           <div className="relative w-full sm:max-w-xs">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -370,26 +363,6 @@ export default function FundingArbPage() {
               className="h-9 bg-background pl-9"
               aria-label="Search funding pairs"
             />
-          </div>
-          <div className="flex rounded-lg border border-border bg-muted/60 p-1">
-            <Button
-              type="button"
-              size="sm"
-              variant={!threeVenuesOnly ? 'secondary' : 'ghost'}
-              onClick={() => setThreeVenuesOnly(false)}
-              className="rounded-md"
-            >
-              Any 2 venues
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={threeVenuesOnly ? 'secondary' : 'ghost'}
-              onClick={() => setThreeVenuesOnly(true)}
-              className="rounded-md"
-            >
-              All 3 venues
-            </Button>
           </div>
         </div>
 
@@ -452,7 +425,7 @@ export default function FundingArbPage() {
                           {opportunity.symbol}
                         </p>
                         <p className="mt-0.5 text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
-                          {opportunity.quotes.length}/3 venues
+                          {opportunity.quotes.length}/2 venues
                         </p>
                       </div>
                     </div>
@@ -523,10 +496,10 @@ export default function FundingArbPage() {
         <Panel className="p-5">
           <h2 className="text-[13px] font-semibold">Live data conventions</h2>
           <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">
-            Lighter&apos;s public comparison feed is already 8-hour-equivalent.
-            Variational&apos;s published percentage-point rate is converted to a
-            fractional rate and scaled from its listed settlement interval to
-            the same 8-hour basis.
+            Robinhood Lighter&apos;s public comparison feed is already
+            8-hour-equivalent. Variational&apos;s published percentage-point
+            rate is converted to a fractional rate and scaled from its listed
+            settlement interval to the same 8-hour basis.
           </p>
           <div className="mt-3 flex flex-wrap gap-3 text-[10px] font-medium">
             <a

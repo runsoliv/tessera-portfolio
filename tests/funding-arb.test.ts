@@ -10,7 +10,7 @@ import {
 
 void test('normalizes Lighter and Variational rates to an 8h basis', () => {
   const lighter = normalizeLighterQuotes(
-    'Lighter',
+    'Robinhood Lighter',
     [{ exchange: 'lighter', symbol: 'BTC', rate: 0.0001 }],
     [
       {
@@ -41,7 +41,7 @@ void test('normalizes Lighter and Variational rates to an 8h basis', () => {
 void test('chooses the lower-rate long and higher-rate short', () => {
   const opportunities = buildFundingOpportunities([
     {
-      venue: 'Lighter',
+      venue: 'Robinhood Lighter',
       symbol: 'ETH',
       fundingRate8h: -0.0002,
       nativeRate: -0.0002,
@@ -52,7 +52,7 @@ void test('chooses the lower-rate long and higher-rate short', () => {
       updatedAt: 1,
     },
     {
-      venue: 'Robinhood Lighter',
+      venue: 'Variational',
       symbol: 'ETH',
       fundingRate8h: 0.0001,
       nativeRate: 0.0001,
@@ -64,8 +64,8 @@ void test('chooses the lower-rate long and higher-rate short', () => {
     },
   ]);
 
-  assert.equal(opportunities[0].longVenue, 'Lighter');
-  assert.equal(opportunities[0].shortVenue, 'Robinhood Lighter');
+  assert.equal(opportunities[0].longVenue, 'Robinhood Lighter');
+  assert.equal(opportunities[0].shortVenue, 'Variational');
   assert.ok(Math.abs(opportunities[0].spread8h - 0.0003) < 1e-12);
   assert.ok(Math.abs((opportunities[0].markDispersionBps ?? 0) - 10) < 1e-9);
 });
@@ -73,7 +73,7 @@ void test('chooses the lower-rate long and higher-rate short', () => {
 void test('subtracts four fills from the funding carry estimate', () => {
   const opportunity = buildFundingOpportunities([
     {
-      venue: 'Lighter',
+      venue: 'Robinhood Lighter',
       symbol: 'SOL',
       fundingRate8h: 0,
       nativeRate: 0,

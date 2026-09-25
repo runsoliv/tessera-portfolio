@@ -1,8 +1,4 @@
-export const FUNDING_VENUES = [
-  'Lighter',
-  'Robinhood Lighter',
-  'Variational',
-] as const;
+export const FUNDING_VENUES = ['Robinhood Lighter', 'Variational'] as const;
 
 export type FundingVenue = (typeof FUNDING_VENUES)[number];
 
@@ -59,7 +55,7 @@ export type VariationalListing = {
 };
 
 export function normalizeLighterQuotes(
-  venue: Extract<FundingVenue, 'Lighter' | 'Robinhood Lighter'>,
+  venue: Extract<FundingVenue, 'Robinhood Lighter'>,
   rates: LighterFundingRate[],
   markets: LighterMarket[],
   now = Date.now(),
