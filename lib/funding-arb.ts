@@ -28,6 +28,7 @@ export type FundingOpportunity = {
 };
 
 export type SimulatedArbPosition = {
+  calculationVersion: 2;
   id: string;
   symbol: string;
   status: 'open' | 'closed';
@@ -40,15 +41,37 @@ export type SimulatedArbPosition = {
   entryLongRate8h: number;
   entryShortRate8h: number;
   entrySpread8h: number;
+  entryLongMarkPrice: number | null;
+  entryShortMarkPrice: number | null;
   currentLongRate8h: number;
   currentShortRate8h: number;
   currentSpread8h: number;
+  currentLongNativeRate: number;
+  currentShortNativeRate: number;
+  longIntervalSeconds: number;
+  shortIntervalSeconds: number;
+  nextLongSettlementAt: number;
+  nextShortSettlementAt: number;
+  settlementCount: number;
+  longQuantity: number | null;
+  shortQuantity: number | null;
+  currentLongNotional: number;
+  currentShortNotional: number;
   accruedGrossCarry: number;
   executionCostBpsPerFill: number;
   expectedHoldHours: number;
   alertSpread8h: number;
   alertTriggeredAt: number | null;
   notifiedAt: number | null;
+  connectedLighterLeg: {
+    holdingIds: string[];
+    accountLabel: string;
+    side: 'long' | 'short';
+    quantity: number;
+    entryPrice: number | null;
+    markPrice: number;
+  } | null;
+  connectedLegMissing: boolean;
 };
 
 export type LighterFundingRate = {
@@ -278,26 +301,56 @@ export function estimateFundingCarry({
   notionalPerLeg,
   holdHours,
   executionCostBpsPerFill,
+  connectedLegAlreadyOpen = false,
+  startAt = Date.now(),
 }: {
   opportunity: FundingOpportunity;
   notionalPerLeg: number;
   holdHours: number;
   executionCostBpsPerFill: number;
+  connectedLegAlreadyOpen?: boolean;
+  startAt?: number;
 }) {
   const notional = Math.max(0, notionalPerLeg);
   const hours = Math.max(0, holdHours);
   const costPerFill = Math.max(0, executionCostBpsPerFill);
-  const grossCarry = notional * opportunity.spread8h * (hours / 8);
-  const executionCost = notional * (costPerFill / 10_000) * 4;
+  const longQuote = opportunity.quotes.find(
+    (quote) => quote.venue === opportunity.longVenue,
+  );
+  const shortQuote = opportunity.quotes.find(
+    (quote) => quote.venue === opportunity.shortVenue,
+  );
+  const longSettlements = longQuote
+    ? countFundingSettlements(startAt, hours, longQuote.intervalSeconds)
+    : 0;
+  const shortSettlements = shortQuote
+    ? countFundingSettlements(startAt, hours, shortQuote.intervalSeconds)
+    : 0;
+  const longFunding = longQuote
+    ? -notional * longQuote.nativeRate * longSettlements
+    : 0;
+  const shortFunding = shortQuote
+    ? notional * shortQuote.nativeRate * shortSettlements
+    : 0;
+  const grossCarry = longFunding + shortFunding;
+  const executionCost =
+    notional * (costPerFill / 10_000) * (connectedLegAlreadyOpen ? 3 : 4);
 
   return {
     grossCarry,
+    longFunding,
+    shortFunding,
+    longSettlements,
+    shortSettlements,
     executionCost,
     netCarry: grossCarry - executionCost,
-    breakEvenHours:
-      opportunity.spread8h > 0
-        ? (executionCost / (notional * opportunity.spread8h)) * 8
-        : null,
+    breakEvenHours: firstProfitableSettlementHours({
+      startAt,
+      notional,
+      executionCost,
+      longQuote,
+      shortQuote,
+    }),
   };
 }
 
@@ -308,6 +361,9 @@ export function openSimulatedArbPosition({
   executionCostBpsPerFill,
   expectedHoldHours,
   alertSpread8h,
+  longQuantity,
+  shortQuantity,
+  connectedLighterLeg = null,
   now = Date.now(),
 }: {
   id: string;
@@ -316,30 +372,74 @@ export function openSimulatedArbPosition({
   executionCostBpsPerFill: number;
   expectedHoldHours: number;
   alertSpread8h: number;
+  longQuantity?: number | null;
+  shortQuantity?: number | null;
+  connectedLighterLeg?: SimulatedArbPosition['connectedLighterLeg'];
   now?: number;
 }): SimulatedArbPosition {
+  const longQuote = opportunity.quotes.find(
+    (quote) => quote.venue === opportunity.longVenue,
+  );
+  const shortQuote = opportunity.quotes.find(
+    (quote) => quote.venue === opportunity.shortVenue,
+  );
+  const safeNotional = Math.max(0, notionalPerLeg);
+  const resolvedLongQuantity =
+    longQuantity ?? quantityFromNotional(safeNotional, longQuote?.markPrice);
+  const resolvedShortQuantity =
+    shortQuantity ?? quantityFromNotional(safeNotional, shortQuote?.markPrice);
   return {
+    calculationVersion: 2,
     id,
     symbol: opportunity.symbol,
     status: 'open',
     longVenue: opportunity.longVenue,
     shortVenue: opportunity.shortVenue,
-    notionalPerLeg: Math.max(0, notionalPerLeg),
+    notionalPerLeg: safeNotional,
     openedAt: now,
     closedAt: null,
     lastMarkedAt: now,
     entryLongRate8h: opportunity.longRate8h,
     entryShortRate8h: opportunity.shortRate8h,
     entrySpread8h: opportunity.spread8h,
+    entryLongMarkPrice: longQuote?.markPrice ?? null,
+    entryShortMarkPrice: shortQuote?.markPrice ?? null,
     currentLongRate8h: opportunity.longRate8h,
     currentShortRate8h: opportunity.shortRate8h,
     currentSpread8h: opportunity.spread8h,
+    currentLongNativeRate: longQuote?.nativeRate ?? 0,
+    currentShortNativeRate: shortQuote?.nativeRate ?? 0,
+    longIntervalSeconds: longQuote?.intervalSeconds ?? 28_800,
+    shortIntervalSeconds: shortQuote?.intervalSeconds ?? 28_800,
+    nextLongSettlementAt: nextFundingBoundary(
+      now,
+      longQuote?.intervalSeconds ?? 28_800,
+    ),
+    nextShortSettlementAt: nextFundingBoundary(
+      now,
+      shortQuote?.intervalSeconds ?? 28_800,
+    ),
+    settlementCount: 0,
+    longQuantity: resolvedLongQuantity,
+    shortQuantity: resolvedShortQuantity,
+    currentLongNotional: notionalFromQuantity(
+      resolvedLongQuantity,
+      longQuote?.markPrice,
+      safeNotional,
+    ),
+    currentShortNotional: notionalFromQuantity(
+      resolvedShortQuantity,
+      shortQuote?.markPrice,
+      safeNotional,
+    ),
     accruedGrossCarry: 0,
     executionCostBpsPerFill: Math.max(0, executionCostBpsPerFill),
     expectedHoldHours: Math.max(0, expectedHoldHours),
     alertSpread8h,
     alertTriggeredAt: null,
     notifiedAt: null,
+    connectedLighterLeg,
+    connectedLegMissing: false,
   };
 }
 
@@ -358,19 +458,70 @@ export function markSimulatedArbPosition(
   );
   if (!longQuote || !shortQuote) return position;
 
-  const elapsedHours = Math.max(0, now - position.lastMarkedAt) / 3_600_000;
+  const legacyCalculation = position.calculationVersion !== 2;
+  const longIntervalSeconds =
+    (legacyCalculation ? null : positiveFinite(position.longIntervalSeconds)) ??
+    longQuote.intervalSeconds;
+  const shortIntervalSeconds =
+    (legacyCalculation
+      ? null
+      : positiveFinite(position.shortIntervalSeconds)) ??
+    shortQuote.intervalSeconds;
+  let nextLongSettlementAt =
+    positiveFinite(position.nextLongSettlementAt) ??
+    nextFundingBoundary(position.lastMarkedAt, longIntervalSeconds);
+  let nextShortSettlementAt =
+    positiveFinite(position.nextShortSettlementAt) ??
+    nextFundingBoundary(position.lastMarkedAt, shortIntervalSeconds);
+  const currentLongNativeRate = Number.isFinite(position.currentLongNativeRate)
+    ? position.currentLongNativeRate
+    : longQuote.nativeRate;
+  const currentShortNativeRate = Number.isFinite(
+    position.currentShortNativeRate,
+  )
+    ? position.currentShortNativeRate
+    : shortQuote.nativeRate;
+  const currentLongNotional = notionalFromQuantity(
+    position.longQuantity,
+    longQuote.markPrice,
+    position.currentLongNotional || position.notionalPerLeg,
+  );
+  const currentShortNotional = notionalFromQuantity(
+    position.shortQuantity,
+    shortQuote.markPrice,
+    position.currentShortNotional || position.notionalPerLeg,
+  );
+  let accruedGrossCarry = legacyCalculation ? 0 : position.accruedGrossCarry;
+  let settlementCount = legacyCalculation ? 0 : (position.settlementCount ?? 0);
+  while (nextLongSettlementAt <= now) {
+    accruedGrossCarry -= currentLongNotional * currentLongNativeRate;
+    settlementCount += 1;
+    nextLongSettlementAt += longIntervalSeconds * 1_000;
+  }
+  while (nextShortSettlementAt <= now) {
+    accruedGrossCarry += currentShortNotional * currentShortNativeRate;
+    settlementCount += 1;
+    nextShortSettlementAt += shortIntervalSeconds * 1_000;
+  }
   const currentSpread8h = shortQuote.fundingRate8h - longQuote.fundingRate8h;
-  const accruedGrossCarry =
-    position.accruedGrossCarry +
-    position.notionalPerLeg * position.currentSpread8h * (elapsedHours / 8);
   const alertTriggered = currentSpread8h <= position.alertSpread8h;
 
   return {
     ...position,
+    calculationVersion: 2,
     lastMarkedAt: Math.max(position.lastMarkedAt, now),
     currentLongRate8h: longQuote.fundingRate8h,
     currentShortRate8h: shortQuote.fundingRate8h,
     currentSpread8h,
+    currentLongNativeRate: longQuote.nativeRate,
+    currentShortNativeRate: shortQuote.nativeRate,
+    longIntervalSeconds,
+    shortIntervalSeconds,
+    nextLongSettlementAt,
+    nextShortSettlementAt,
+    settlementCount,
+    currentLongNotional,
+    currentShortNotional,
     accruedGrossCarry,
     alertTriggeredAt:
       alertTriggered && position.alertTriggeredAt === null
@@ -380,9 +531,90 @@ export function markSimulatedArbPosition(
 }
 
 export function simulatedArbRoundTripCost(position: SimulatedArbPosition) {
-  return (
-    position.notionalPerLeg * (position.executionCostBpsPerFill / 10_000) * 4
-  );
+  const longNotional =
+    positiveFinite(position.currentLongNotional) ?? position.notionalPerLeg;
+  const shortNotional =
+    positiveFinite(position.currentShortNotional) ?? position.notionalPerLeg;
+  const rate = position.executionCostBpsPerFill / 10_000;
+  if (position.connectedLighterLeg) {
+    const connectedNotional =
+      position.connectedLighterLeg.side === 'long'
+        ? longNotional
+        : shortNotional;
+    const hedgeNotional =
+      position.connectedLighterLeg.side === 'long'
+        ? shortNotional
+        : longNotional;
+    return connectedNotional * rate + hedgeNotional * rate * 2;
+  }
+  return (longNotional + shortNotional) * rate * 2;
+}
+
+export function countFundingSettlements(
+  startAt: number,
+  holdHours: number,
+  intervalSeconds: number,
+) {
+  if (!(holdHours > 0) || !(intervalSeconds > 0)) return 0;
+  const first = nextFundingBoundary(startAt, intervalSeconds);
+  const end = startAt + holdHours * 3_600_000;
+  if (first > end) return 0;
+  return Math.floor((end - first) / (intervalSeconds * 1_000)) + 1;
+}
+
+function firstProfitableSettlementHours({
+  startAt,
+  notional,
+  executionCost,
+  longQuote,
+  shortQuote,
+}: {
+  startAt: number;
+  notional: number;
+  executionCost: number;
+  longQuote: FundingQuote | undefined;
+  shortQuote: FundingQuote | undefined;
+}) {
+  if (!longQuote || !shortQuote || !(notional > 0)) return null;
+  let total = 0;
+  let nextLong = nextFundingBoundary(startAt, longQuote.intervalSeconds);
+  let nextShort = nextFundingBoundary(startAt, shortQuote.intervalSeconds);
+  const limit = startAt + 365 * 24 * 3_600_000;
+  while (Math.min(nextLong, nextShort) <= limit) {
+    const next = Math.min(nextLong, nextShort);
+    if (nextLong === next) {
+      total -= notional * longQuote.nativeRate;
+      nextLong += longQuote.intervalSeconds * 1_000;
+    }
+    if (nextShort === next) {
+      total += notional * shortQuote.nativeRate;
+      nextShort += shortQuote.intervalSeconds * 1_000;
+    }
+    if (total >= executionCost) return (next - startAt) / 3_600_000;
+  }
+  return null;
+}
+
+function quantityFromNotional(
+  notional: number,
+  markPrice: number | null | undefined,
+) {
+  return markPrice && markPrice > 0 ? notional / markPrice : null;
+}
+
+function notionalFromQuantity(
+  quantity: number | null | undefined,
+  markPrice: number | null | undefined,
+  fallback: number,
+) {
+  return quantity != null && quantity > 0 && markPrice && markPrice > 0
+    ? quantity * markPrice
+    : Math.max(0, fallback);
+}
+
+function positiveFinite(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function cleanSymbol(value: string) {

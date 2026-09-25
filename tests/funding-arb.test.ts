@@ -123,12 +123,68 @@ void test('subtracts four fills from the funding carry estimate', () => {
     notionalPerLeg: 10_000,
     holdHours: 24,
     executionCostBpsPerFill: 2,
+    startAt: 1_000,
   });
 
   assert.equal(estimate.grossCarry, 30);
   assert.equal(estimate.executionCost, 8);
   assert.equal(estimate.netCarry, 22);
-  assert.ok(Math.abs((estimate.breakEvenHours ?? 0) - 6.4) < 1e-9);
+  assert.ok(Math.abs((estimate.breakEvenHours ?? 0) - 7.9997222222) < 1e-9);
+});
+
+void test('counts native funding settlements instead of accruing continuously', () => {
+  const opportunity = buildFundingOpportunities([
+    fundingQuote('Robinhood Lighter', 'BTC', 0.0008, 0.0001, 3_600),
+    fundingQuote('Variational', 'BTC', 0.001, 0.0005, 14_400),
+  ])[0];
+  const estimate = estimateFundingCarry({
+    opportunity,
+    notionalPerLeg: 10_000,
+    holdHours: 2,
+    executionCostBpsPerFill: 0,
+    startAt: 1_000,
+  });
+
+  assert.equal(estimate.longSettlements, 2);
+  assert.equal(estimate.shortSettlements, 0);
+  assert.equal(estimate.longFunding, -2);
+  assert.equal(estimate.shortFunding, 0);
+  assert.equal(estimate.grossCarry, -2);
+});
+
+void test('charges only the remaining three fills when the RH leg is already open', () => {
+  const opportunity = buildFundingOpportunities([
+    fundingQuote('Robinhood Lighter', 'BTC', 0.0001),
+    fundingQuote('Variational', 'BTC', 0.001),
+  ])[0];
+  const estimate = estimateFundingCarry({
+    opportunity,
+    notionalPerLeg: 10_000,
+    holdHours: 24,
+    executionCostBpsPerFill: 2,
+    connectedLegAlreadyOpen: true,
+    startAt: 1_000,
+  });
+  const position = openSimulatedArbPosition({
+    id: 'connected-1',
+    opportunity,
+    notionalPerLeg: 10_000,
+    executionCostBpsPerFill: 2,
+    expectedHoldHours: 24,
+    alertSpread8h: 0,
+    connectedLighterLeg: {
+      holdingIds: ['rh-btc'],
+      accountLabel: 'RH account',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 95,
+      markPrice: 100,
+    },
+    now: 1_000,
+  });
+
+  assert.equal(estimate.executionCost, 6);
+  assert.equal(simulatedArbRoundTripCost(position), 6);
 });
 
 void test('marks a simulated arb in its original long and short direction', () => {
@@ -165,14 +221,16 @@ function fundingQuote(
   venue: 'Robinhood Lighter' | 'Variational',
   symbol: string,
   fundingRate8h: number,
+  nativeRate = fundingRate8h,
+  intervalSeconds = 28_800,
 ) {
   return {
     venue,
     symbol,
     marketId: venue === 'Robinhood Lighter' ? 1 : null,
     fundingRate8h,
-    nativeRate: fundingRate8h,
-    intervalSeconds: 28_800,
+    nativeRate,
+    intervalSeconds,
     markPrice: 100,
     openInterest: null,
     volume24h: null,

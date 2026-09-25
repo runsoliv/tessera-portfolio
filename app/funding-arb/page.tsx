@@ -29,6 +29,7 @@ import {
   Panel,
   PanelHeader,
 } from '@/components/page-primitives';
+import { usePortfolio } from '@/components/portfolio-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -54,6 +55,7 @@ import {
   type FundingVenue,
   type SimulatedArbPosition,
 } from '@/lib/funding-arb';
+import type { ValuedHolding } from '@/lib/analytics';
 
 type FundingResponse = {
   fetchedAt: number;
@@ -65,9 +67,29 @@ type FundingResponse = {
 type TrackedSpread = { timestamp: number; spread8h: number };
 type TrackedSpreads = Record<string, TrackedSpread[]>;
 
+type ConnectedLighterLeg = {
+  holdingIds: string[];
+  accountLabel: string;
+  side: 'long' | 'short';
+  quantity: number;
+  notional: number;
+  entryPrice: number | null;
+  markPrice: number;
+};
+
 const SIMULATED_POSITIONS_KEY = 'tessera-simulated-arbs-v1';
 
 export default function FundingArbPage() {
+  const { analytics, refreshPortfolio, refreshState } = usePortfolio();
+  const importedPerps = useMemo(
+    () => [
+      ...analytics.perps,
+      ...analytics.dustHoldings.filter(
+        (holding) => holding.positionKind === 'perp',
+      ),
+    ],
+    [analytics.dustHoldings, analytics.perps],
+  );
   const [data, setData] = useState<FundingResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -219,6 +241,71 @@ export default function FundingArbPage() {
     }
   }, [simulatedPositions, simulationsReady]);
 
+  useEffect(() => {
+    if (!simulationsReady) return;
+    const timer = window.setTimeout(() => {
+      setSimulatedPositions((current) =>
+        current.map((position) => {
+          if (position.status !== 'open' || !position.connectedLighterLeg)
+            return position;
+          const liveLeg = findConnectedRobinhoodLighterLeg(
+            importedPerps,
+            position.symbol,
+            position.connectedLighterLeg.side,
+          );
+          if (!liveLeg)
+            return {
+              ...position,
+              connectedLegMissing: true,
+              alertTriggeredAt: position.alertTriggeredAt ?? Date.now(),
+            };
+          const hedgeQuantity =
+            liveLeg.side === 'long'
+              ? position.shortQuantity
+              : position.longQuantity;
+          const mismatch =
+            hedgeQuantity != null && hedgeQuantity > 0
+              ? Math.abs(liveLeg.quantity - hedgeQuantity) / hedgeQuantity >
+                0.005
+              : false;
+          return {
+            ...position,
+            connectedLighterLeg: {
+              holdingIds: liveLeg.holdingIds,
+              accountLabel: liveLeg.accountLabel,
+              side: liveLeg.side,
+              quantity: liveLeg.quantity,
+              entryPrice: liveLeg.entryPrice,
+              markPrice: liveLeg.markPrice,
+            },
+            connectedLegMissing: false,
+            longQuantity:
+              liveLeg.side === 'long'
+                ? liveLeg.quantity
+                : position.longQuantity,
+            shortQuantity:
+              liveLeg.side === 'short'
+                ? liveLeg.quantity
+                : position.shortQuantity,
+            currentLongNotional:
+              liveLeg.side === 'long'
+                ? liveLeg.notional
+                : position.currentLongNotional,
+            currentShortNotional:
+              liveLeg.side === 'short'
+                ? liveLeg.notional
+                : position.currentShortNotional,
+            alertTriggeredAt:
+              mismatch && position.alertTriggeredAt === null
+                ? Date.now()
+                : position.alertTriggeredAt,
+          };
+        }),
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [importedPerps, simulationsReady]);
+
   const filtered = useMemo(() => {
     const search = query.trim().toUpperCase();
     return (data?.opportunities ?? []).filter(
@@ -229,12 +316,26 @@ export default function FundingArbPage() {
     filtered.find((opportunity) => opportunity.symbol === selectedSymbol) ??
     filtered[0] ??
     null;
-  const selectedEstimate = selected
+  const connectedLighterLeg = useMemo(
+    () =>
+      selected
+        ? findConnectedRobinhoodLighterLeg(importedPerps, selected.symbol)
+        : null,
+    [importedPerps, selected],
+  );
+  const trackedOpportunity =
+    selected && connectedLighterLeg
+      ? orientOpportunityToLighterLeg(selected, connectedLighterLeg.side)
+      : selected;
+  const trackedNotional = connectedLighterLeg?.notional ?? notionalPerLeg;
+  const selectedEstimate = trackedOpportunity
     ? estimateFundingCarry({
-        opportunity: selected,
-        notionalPerLeg,
+        opportunity: trackedOpportunity,
+        notionalPerLeg: trackedNotional,
         holdHours,
         executionCostBpsPerFill: costBpsPerFill,
+        connectedLegAlreadyOpen: Boolean(connectedLighterLeg),
+        startAt: data?.fetchedAt ?? clock,
       })
     : null;
   const lighterQuote = selected?.quotes.find(
@@ -264,6 +365,7 @@ export default function FundingArbPage() {
         notionalPerLeg,
         holdHours,
         executionCostBpsPerFill: costBpsPerFill,
+        startAt: data?.fetchedAt ?? clock,
       }).netCarry > 0,
   ).length;
   const openSimulations = simulatedPositions.filter(
@@ -300,20 +402,42 @@ export default function FundingArbPage() {
   }, [historyByMarket, lighterMarketId]);
 
   const openSimulation = () => {
-    if (!selected) return;
+    if (!selected || !trackedOpportunity) return;
     const id =
       typeof crypto !== 'undefined' && 'randomUUID' in crypto
         ? crypto.randomUUID()
         : `${selected.symbol}-${Date.now()}`;
-    const position = openSimulatedArbPosition({
+    let longQuantity: number | null | undefined;
+    let shortQuantity: number | null | undefined;
+    if (connectedLighterLeg) {
+      longQuantity = connectedLighterLeg.quantity;
+      shortQuantity = connectedLighterLeg.quantity;
+    }
+    let position = openSimulatedArbPosition({
       id,
-      opportunity: selected,
-      notionalPerLeg,
+      opportunity: trackedOpportunity,
+      notionalPerLeg: trackedNotional,
       executionCostBpsPerFill: costBpsPerFill,
       expectedHoldHours: holdHours,
-      alertSpread8h: Math.max(0, selected.spread8h * 0.25),
+      alertSpread8h: Math.max(0, trackedOpportunity.spread8h * 0.25),
+      longQuantity,
+      shortQuantity,
+      connectedLighterLeg,
       now: data?.fetchedAt ?? Date.now(),
     });
+    if (connectedLighterLeg) {
+      position = {
+        ...position,
+        entryLongMarkPrice:
+          connectedLighterLeg.side === 'long'
+            ? connectedLighterLeg.entryPrice
+            : position.entryLongMarkPrice,
+        entryShortMarkPrice:
+          connectedLighterLeg.side === 'short'
+            ? connectedLighterLeg.entryPrice
+            : position.entryShortMarkPrice,
+      };
+    }
     setSimulatedPositions((current) => [position, ...current]);
   };
 
@@ -361,19 +485,19 @@ export default function FundingArbPage() {
       <PageIntro
         eyebrow="Live cross-venue scanner"
         title="Funding rate arbitrage"
-        description="Compare matching perpetuals on Robinhood Lighter and Variational. Rates are normalized to an 8-hour basis, then translated into a two-leg carry estimate."
+        description="Compare matching perpetuals on Robinhood Lighter and Variational. Rates are normalized to 8 hours for ranking; projections count each venue’s discrete native settlement events."
         actions={
           <Button
             type="button"
             variant="outline"
-            onClick={() => void refresh()}
-            disabled={loading}
+            onClick={() => void Promise.all([refresh(), refreshPortfolio()])}
+            disabled={loading || refreshState === 'loading'}
             className="h-9 border-border bg-card"
           >
             <RefreshCw
-              className={`size-3.5 ${loading ? 'animate-spin' : ''}`}
+              className={`size-3.5 ${loading || refreshState === 'loading' ? 'animate-spin' : ''}`}
             />
-            Refresh rates
+            Refresh rates + account
           </Button>
         }
       />
@@ -417,7 +541,7 @@ export default function FundingArbPage() {
       <Panel className="overflow-hidden">
         <PanelHeader
           title="Arbitrage calculator"
-          description="Enter matched notional for each leg. Cost per fill is charged four times: opening and closing both the long and the short."
+          description="Enter matched notional for each leg. A new paper pair counts four fills; when a connected RH leg is reused, only its close plus opening and closing the hedge are counted."
           aside={
             <Badge variant="outline" className="hidden sm:inline-flex">
               <Wifi /> Auto-refresh · 60s
@@ -466,7 +590,7 @@ export default function FundingArbPage() {
             </p>
           </div>
 
-          {selected && selectedEstimate ? (
+          {selected && trackedOpportunity && selectedEstimate ? (
             <div className="min-w-0 rounded-xl border border-primary/25 bg-primary/[0.045] p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -479,15 +603,16 @@ export default function FundingArbPage() {
                         {selected.symbol} neutral carry
                       </p>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
-                        Matched {formatMoney(notionalPerLeg)} long and short
-                        legs
+                        {connectedLighterLeg
+                          ? `Connected RH ${connectedLighterLeg.side} · ${formatQuantity(connectedLighterLeg.quantity)} ${selected.symbol} · ${formatMoney(connectedLighterLeg.notional)}`
+                          : `Matched ${formatMoney(notionalPerLeg)} long and short legs`}
                       </p>
                     </div>
                   </div>
                 </div>
                 <div className="text-left sm:text-right">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-                    Estimated net carry
+                    Scheduled net carry
                   </p>
                   <p
                     className={`mt-1 font-mono text-[28px] font-semibold tracking-[-0.05em] ${selectedEstimate.netCarry >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
@@ -505,23 +630,63 @@ export default function FundingArbPage() {
                     className="mt-3 h-8"
                   >
                     <Plus className="size-3.5" />
-                    Track simulated arb
+                    {connectedLighterLeg
+                      ? 'Use RH leg + simulate hedge'
+                      : 'Track simulated arb'}
                   </Button>
                 </div>
               </div>
 
+              {connectedLighterLeg ? (
+                <div className="mt-4 grid gap-3 rounded-xl border border-primary/25 bg-card/70 p-3 sm:grid-cols-2">
+                  <div>
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">
+                      Existing RH Lighter leg found
+                    </p>
+                    <p className="mt-1.5 text-[11px] font-semibold">
+                      {connectedLighterLeg.side.toUpperCase()}{' '}
+                      {formatQuantity(connectedLighterLeg.quantity)}{' '}
+                      {selected.symbol} @{' '}
+                      {connectedLighterLeg.entryPrice
+                        ? formatMoneyPrecise(connectedLighterLeg.entryPrice)
+                        : 'unknown entry'}
+                    </p>
+                    <p className="mt-1 text-[9px] text-muted-foreground">
+                      {connectedLighterLeg.accountLabel} · current notional{' '}
+                      {formatMoneyPrecise(connectedLighterLeg.notional)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                      Required Variational hedge
+                    </p>
+                    <p className="mt-1.5 text-[11px] font-semibold">
+                      {connectedLighterLeg.side === 'long' ? 'SHORT' : 'LONG'}{' '}
+                      {formatQuantity(connectedLighterLeg.quantity)}{' '}
+                      {selected.symbol}
+                    </p>
+                    <p className="mt-1 text-[9px] text-muted-foreground">
+                      Same base size; exit by reversing this hedge and closing
+                      the RH leg.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mt-5 grid gap-2 md:grid-cols-[1fr_auto_1fr] md:items-center">
                 <VenueLeg
                   side="Long"
-                  venue={selected.longVenue}
-                  rate={selected.longRate8h}
+                  quote={trackedOpportunity.quotes.find(
+                    (quote) => quote.venue === trackedOpportunity.longVenue,
+                  )}
                   icon={ArrowDownLeft}
                 />
                 <ArrowLeftRight className="mx-auto hidden size-4 text-muted-foreground md:block" />
                 <VenueLeg
                   side="Short"
-                  venue={selected.shortVenue}
-                  rate={selected.shortRate8h}
+                  quote={trackedOpportunity.quotes.find(
+                    (quote) => quote.venue === trackedOpportunity.shortVenue,
+                  )}
                   icon={ArrowUpRight}
                 />
               </div>
@@ -529,18 +694,18 @@ export default function FundingArbPage() {
               <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border/70 pt-4 sm:grid-cols-4">
                 <CompactStat
                   label="8h spread"
-                  value={formatRate(selected.spread8h)}
+                  value={formatRate(trackedOpportunity.spread8h)}
                 />
                 <CompactStat
-                  label="Simple APR"
-                  value={formatRate(selected.annualizedSpread)}
+                  label="Scheduled payments"
+                  value={`${selectedEstimate.longSettlements}L / ${selectedEstimate.shortSettlements}S`}
                 />
                 <CompactStat
-                  label="Gross carry"
+                  label="Scheduled gross"
                   value={signedMoney(selectedEstimate.grossCarry)}
                 />
                 <CompactStat
-                  label="Break-even"
+                  label="First net-positive"
                   value={
                     selectedEstimate.breakEvenHours === null
                       ? 'Never'
@@ -626,9 +791,10 @@ export default function FundingArbPage() {
                   />
                 </div>
                 <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-                  The stress case assumes only {rateRetentionPct}% of the
-                  current spread survives for the full hold. Prefer a positive
-                  stress result with comfortable room over four fills.
+                  The stress case applies {rateRetentionPct}% of today&apos;s
+                  native rate to each scheduled payment—not continuous hourly
+                  accrual. Prefer a positive result with room over the remaining
+                  execution costs.
                 </p>
               </div>
 
@@ -642,7 +808,7 @@ export default function FundingArbPage() {
                 <div className="mt-3 space-y-3">
                   <ReadinessRow
                     ready={costCoverage >= 3}
-                    label="Expected funding covers all four fill costs by 3× or more"
+                    label={`Expected funding covers ${connectedLighterLeg ? 'the three remaining fills' : 'all four fills'} by 3× or more`}
                     detail={
                       Number.isFinite(costCoverage)
                         ? `${costCoverage.toFixed(1)}×`
@@ -711,7 +877,7 @@ export default function FundingArbPage() {
       <Panel className="mt-4 overflow-hidden">
         <PanelHeader
           title="Simulated arb positions"
-          description="Paper-track the exact long and short venues you selected. Estimated carry updates from the live funding spread and is stored on this device."
+          description="Paper-track both legs or pair a live RH Lighter leg with a simulated Variational hedge. Funding posts only when each native settlement boundary is crossed."
           aside={
             <div className="flex flex-wrap items-center justify-end gap-2">
               {triggeredSimulations.length > 0 ? (
@@ -773,10 +939,10 @@ export default function FundingArbPage() {
           </div>
         )}
         <p className="border-t border-border px-5 py-3 text-[9px] leading-4 text-muted-foreground">
-          Funding is estimated between 60-second observations; actual venue
-          settlement, fills, slippage, basis movement and liquidation are not
-          simulated. Browser alerts work only while this site can refresh in the
-          background.
+          Each funding event uses the most recently observed native venue rate
+          and each leg&apos;s notional; nothing accrues continuously between
+          payments. Actual fills, slippage, basis movement and liquidation are
+          not simulated. Browser alerts require this site to keep refreshing.
         </p>
       </Panel>
 
@@ -870,6 +1036,7 @@ export default function FundingArbPage() {
                 notionalPerLeg,
                 holdHours,
                 executionCostBpsPerFill: costBpsPerFill,
+                startAt: data?.fetchedAt ?? clock,
               });
               const active = selected?.symbol === opportunity.symbol;
               return (
@@ -970,7 +1137,9 @@ export default function FundingArbPage() {
             Robinhood Lighter&apos;s public comparison feed is already
             8-hour-equivalent. Variational&apos;s published percentage-point
             rate is converted to a fractional rate and scaled from its listed
-            settlement interval to the same 8-hour basis.
+            settlement interval to the same 8-hour basis for ranking only. Carry
+            projections separately count hourly RH payments and each
+            market&apos;s listed Variational payment interval.
           </p>
           <div className="mt-3 flex flex-wrap gap-3 text-[10px] font-medium">
             <a
@@ -1148,17 +1317,68 @@ function SimulatedPositionCard({
   onAlertChange: (percentage: number) => void;
   onRemove: () => void;
 }) {
+  const longIntervalSeconds =
+    position.longIntervalSeconds ||
+    (position.longVenue === 'Robinhood Lighter' ? 3_600 : 28_800);
+  const shortIntervalSeconds =
+    position.shortIntervalSeconds ||
+    (position.shortVenue === 'Robinhood Lighter' ? 3_600 : 28_800);
+  const currentLongNativeRate = Number.isFinite(position.currentLongNativeRate)
+    ? position.currentLongNativeRate
+    : position.currentLongRate8h * (longIntervalSeconds / 28_800);
+  const currentShortNativeRate = Number.isFinite(
+    position.currentShortNativeRate,
+  )
+    ? position.currentShortNativeRate
+    : position.currentShortRate8h * (shortIntervalSeconds / 28_800);
+  const currentLongNotional =
+    position.currentLongNotional || position.notionalPerLeg;
+  const currentShortNotional =
+    position.currentShortNotional || position.notionalPerLeg;
   const roundTripCost = simulatedArbRoundTripCost(position);
   const netIfClosed = position.accruedGrossCarry - roundTripCost;
   const endTime = position.openedAt + position.expectedHoldHours * 3_600_000;
-  const remainingHours = Math.max(0, endTime - now) / 3_600_000;
+  const futureLongSettlements = countSettlementsFromNext(
+    position.nextLongSettlementAt ||
+      nextFundingBoundary(position.lastMarkedAt, longIntervalSeconds),
+    endTime,
+    longIntervalSeconds,
+  );
+  const futureShortSettlements = countSettlementsFromNext(
+    position.nextShortSettlementAt ||
+      nextFundingBoundary(position.lastMarkedAt, shortIntervalSeconds),
+    endTime,
+    shortIntervalSeconds,
+  );
   const projectedNet =
     position.accruedGrossCarry +
-    position.notionalPerLeg * position.currentSpread8h * (remainingHours / 8) -
+    -currentLongNotional * currentLongNativeRate * futureLongSettlements +
+    currentShortNotional * currentShortNativeRate * futureShortSettlements -
     roundTripCost;
   const elapsedUntil = position.closedAt ?? now;
   const isAlert =
-    position.status === 'open' && position.alertTriggeredAt !== null;
+    position.status === 'open' &&
+    (position.alertTriggeredAt !== null || position.connectedLegMissing);
+  const hedgeQuantity = position.connectedLighterLeg
+    ? position.connectedLighterLeg.side === 'long'
+      ? position.shortQuantity
+      : position.longQuantity
+    : null;
+  const hedgeVenue = position.connectedLighterLeg ? 'Variational' : null;
+  const hedgeSide = position.connectedLighterLeg
+    ? position.connectedLighterLeg.side === 'long'
+      ? 'SHORT'
+      : 'LONG'
+    : null;
+  const hedgeEntryPrice = position.connectedLighterLeg
+    ? position.connectedLighterLeg.side === 'long'
+      ? position.entryShortMarkPrice
+      : position.entryLongMarkPrice
+    : null;
+  const quantityMismatch =
+    position.connectedLighterLeg && hedgeQuantity != null
+      ? position.connectedLighterLeg.quantity - hedgeQuantity
+      : 0;
 
   return (
     <article
@@ -1182,16 +1402,23 @@ function SimulatedPositionCard({
                     : 'text-muted-foreground'
                 }
               >
-                {position.status === 'open' ? 'Paper open' : 'Closed'}
+                {position.status === 'open'
+                  ? position.connectedLighterLeg
+                    ? 'Live RH + paper hedge'
+                    : 'Paper open'
+                  : 'Closed'}
               </Badge>
               {isAlert ? (
                 <Badge className="border-[var(--negative)]/30 bg-[var(--negative)]/10 text-[var(--negative)]">
-                  <BellRing /> Review to close
+                  <BellRing />
+                  {position.connectedLegMissing
+                    ? 'RH leg closed or missing'
+                    : 'Review position'}
                 </Badge>
               ) : null}
             </div>
             <p className="mt-1 text-[10px] text-muted-foreground">
-              {formatMoney(position.notionalPerLeg)} per leg · open{' '}
+              {formatMoney(position.notionalPerLeg)} reference notional · open{' '}
               {formatDuration(
                 Math.max(0, elapsedUntil - position.openedAt) / 3_600_000,
               )}
@@ -1210,6 +1437,67 @@ function SimulatedPositionCard({
         </div>
       </div>
 
+      {position.connectedLighterLeg ? (
+        <div
+          className={`mt-4 rounded-lg border p-3 ${position.connectedLegMissing ? 'border-[var(--negative)]/40 bg-[var(--negative)]/[0.05]' : 'border-primary/25 bg-primary/[0.035]'}`}
+        >
+          <p className="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">
+            Connected-leg execution
+          </p>
+          {position.connectedLegMissing ? (
+            <p className="mt-1.5 text-[10px] text-[var(--negative)]">
+              The imported RH Lighter leg is no longer open. Close or review the
+              Variational hedge immediately.
+            </p>
+          ) : (
+            <div className="mt-2 grid gap-2 text-[10px] sm:grid-cols-2">
+              <div>
+                <span className="text-muted-foreground">RH already open:</span>{' '}
+                <strong>
+                  {position.connectedLighterLeg.side.toUpperCase()}{' '}
+                  {formatQuantity(position.connectedLighterLeg.quantity)}{' '}
+                  {position.symbol}
+                </strong>
+                <span className="mt-1 block text-muted-foreground">
+                  Entry{' '}
+                  {position.connectedLighterLeg.entryPrice
+                    ? formatMoneyPrecise(
+                        position.connectedLighterLeg.entryPrice,
+                      )
+                    : 'unknown'}{' '}
+                  · {position.connectedLighterLeg.accountLabel}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">
+                  Hedge instruction:
+                </span>{' '}
+                <strong>
+                  {hedgeSide} {formatQuantity(hedgeQuantity ?? 0)}{' '}
+                  {position.symbol} on {hedgeVenue}
+                </strong>
+                <span className="mt-1 block text-muted-foreground">
+                  Entry mark{' '}
+                  {hedgeEntryPrice
+                    ? formatMoneyPrecise(hedgeEntryPrice)
+                    : 'unavailable'}{' '}
+                  · Exit {formatQuantity(hedgeQuantity ?? 0)} by reversing the
+                  Variational leg, then close{' '}
+                  {formatQuantity(position.connectedLighterLeg.quantity)} on RH.
+                </span>
+              </div>
+              {Math.abs(quantityMismatch) > 0.00000001 ? (
+                <p className="sm:col-span-2 text-[var(--warning)]">
+                  RH size changed by {formatQuantity(quantityMismatch)}{' '}
+                  {position.symbol}; rebalance the simulated hedge to{' '}
+                  {formatQuantity(position.connectedLighterLeg.quantity)}.
+                </p>
+              ) : null}
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
         <div className="rounded-lg border border-border bg-card px-3 py-2.5">
           <p className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -1217,7 +1505,8 @@ function SimulatedPositionCard({
           </p>
           <p className="mt-1 text-[11px] font-semibold">{position.longVenue}</p>
           <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-            {formatRate(position.currentLongRate8h)} / 8h
+            {formatRate(currentLongNativeRate)} /{' '}
+            {formatInterval(longIntervalSeconds)} payment
           </p>
         </div>
         <ArrowLeftRight className="mx-auto hidden size-3.5 text-muted-foreground sm:block" />
@@ -1229,7 +1518,8 @@ function SimulatedPositionCard({
             {position.shortVenue}
           </p>
           <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-            {formatRate(position.currentShortRate8h)} / 8h
+            {formatRate(currentShortNativeRate)} /{' '}
+            {formatInterval(shortIntervalSeconds)} payment
           </p>
         </div>
       </div>
@@ -1244,11 +1534,11 @@ function SimulatedPositionCard({
           value={formatRate(position.currentSpread8h)}
         />
         <CompactStat
-          label="Est. gross earned"
+          label={`Settled gross · ${position.settlementCount ?? 0} events`}
           value={signedMoneyPrecise(position.accruedGrossCarry)}
         />
         <CompactStat
-          label="Projected horizon net"
+          label={`Scheduled net · ${futureLongSettlements}L/${futureShortSettlements}S left`}
           value={signedMoneyPrecise(projectedNet)}
         />
       </div>
@@ -1342,23 +1632,25 @@ function CheckRow({
 
 function VenueLeg({
   side,
-  venue,
-  rate,
+  quote,
   icon: Icon,
 }: {
   side: 'Long' | 'Short';
-  venue: FundingVenue;
-  rate: number;
+  quote: FundingQuote | undefined;
   icon: typeof ArrowDownLeft;
 }) {
+  if (!quote) return null;
   return (
     <div className="rounded-lg border border-border bg-card p-3.5">
       <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.09em] text-muted-foreground">
         <Icon className="size-3.5 text-primary" /> {side}
       </div>
-      <p className="mt-2 text-[13px] font-semibold">{venue}</p>
+      <p className="mt-2 text-[13px] font-semibold">{quote.venue}</p>
       <p className="mt-1 font-mono text-[12px] text-muted-foreground">
-        {formatRate(rate)} / 8h
+        {formatRate(quote.nativeRate)} / {formatInterval(quote.intervalSeconds)}
+      </p>
+      <p className="mt-0.5 text-[9px] text-muted-foreground">
+        {formatRate(quote.fundingRate8h)} normalized / 8h
       </p>
     </div>
   );
@@ -1403,6 +1695,21 @@ function formatMoney(value: number) {
   }).format(value);
 }
 
+function formatMoneyPrecise(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatQuantity(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: Math.abs(value) < 1 ? 6 : 4,
+  }).format(value);
+}
+
 function signedMoney(value: number) {
   return `${value >= 0 ? '+' : '-'}${formatMoney(Math.abs(value))}`;
 }
@@ -1440,6 +1747,20 @@ function formatCountdown(milliseconds: number) {
     .join(':');
 }
 
+function countSettlementsFromNext(
+  nextSettlementAt: number,
+  endAt: number,
+  intervalSeconds: number,
+) {
+  if (
+    !(nextSettlementAt > 0) ||
+    !(intervalSeconds > 0) ||
+    nextSettlementAt > endAt
+  )
+    return 0;
+  return Math.floor((endAt - nextSettlementAt) / (intervalSeconds * 1_000)) + 1;
+}
+
 function formatClock(timestamp: number) {
   return new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
@@ -1469,4 +1790,85 @@ function loadSimulatedPositions(): SimulatedArbPosition[] {
   } catch {
     return [];
   }
+}
+
+function findConnectedRobinhoodLighterLeg(
+  perps: ValuedHolding[],
+  symbol: string,
+  preferredSide?: 'long' | 'short',
+): ConnectedLighterLeg | null {
+  const matches = perps.filter(
+    (holding) =>
+      holding.symbol.toUpperCase() === symbol.toUpperCase() &&
+      holding.importedFrom === 'lighter' &&
+      `${holding.network ?? ''} ${holding.provider ?? ''}`
+        .toLowerCase()
+        .includes('robinhood lighter') &&
+      holding.amount > 0 &&
+      holding.notional > 0,
+  );
+  if (!matches.length) return null;
+
+  const groups = (['long', 'short'] as const).map((side) => {
+    const holdings = matches.filter(
+      (holding) => (holding.side ?? 'long') === side,
+    );
+    const quantity = holdings.reduce((sum, holding) => sum + holding.amount, 0);
+    const notional = holdings.reduce(
+      (sum, holding) => sum + holding.notional,
+      0,
+    );
+    const entryValue = holdings.reduce(
+      (sum, holding) => sum + holding.amount * Number(holding.entryPrice ?? 0),
+      0,
+    );
+    return { side, holdings, quantity, notional, entryValue };
+  });
+  const group = preferredSide
+    ? groups.find((item) => item.side === preferredSide)
+    : groups.sort((a, b) => b.notional - a.notional)[0];
+  if (!group) return null;
+  if (!group.holdings.length || !(group.quantity > 0)) return null;
+
+  return {
+    holdingIds: group.holdings.map((holding) => holding.id),
+    accountLabel: Array.from(
+      new Set(
+        group.holdings.map(
+          (holding) => holding.accountLabel ?? 'Robinhood Lighter',
+        ),
+      ),
+    ).join(', '),
+    side: group.side,
+    quantity: group.quantity,
+    notional: group.notional,
+    entryPrice: group.entryValue > 0 ? group.entryValue / group.quantity : null,
+    markPrice: group.notional / group.quantity,
+  };
+}
+
+function orientOpportunityToLighterLeg(
+  opportunity: FundingOpportunity,
+  lighterSide: 'long' | 'short',
+) {
+  const robinhoodQuote = opportunity.quotes.find(
+    (quote) => quote.venue === 'Robinhood Lighter',
+  );
+  const variationalQuote = opportunity.quotes.find(
+    (quote) => quote.venue === 'Variational',
+  );
+  if (!robinhoodQuote || !variationalQuote) return opportunity;
+  const longQuote = lighterSide === 'long' ? robinhoodQuote : variationalQuote;
+  const shortQuote =
+    lighterSide === 'short' ? robinhoodQuote : variationalQuote;
+  const spread8h = shortQuote.fundingRate8h - longQuote.fundingRate8h;
+  return {
+    ...opportunity,
+    longVenue: longQuote.venue,
+    shortVenue: shortQuote.venue,
+    longRate8h: longQuote.fundingRate8h,
+    shortRate8h: shortQuote.fundingRate8h,
+    spread8h,
+    annualizedSpread: spread8h * 3 * 365,
+  };
 }
