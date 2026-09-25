@@ -4,10 +4,13 @@ import test from 'node:test';
 import {
   buildFundingOpportunities,
   estimateFundingCarry,
+  markSimulatedArbPosition,
   nextFundingBoundary,
   normalizeLighterQuotes,
   normalizeLighterFundingHistory,
   normalizeVariationalQuotes,
+  openSimulatedArbPosition,
+  simulatedArbRoundTripCost,
 } from '../lib/funding-arb.ts';
 
 void test('normalizes Lighter and Variational rates to an 8h basis', () => {
@@ -127,3 +130,52 @@ void test('subtracts four fills from the funding carry estimate', () => {
   assert.equal(estimate.netCarry, 22);
   assert.ok(Math.abs((estimate.breakEvenHours ?? 0) - 6.4) < 1e-9);
 });
+
+void test('marks a simulated arb in its original long and short direction', () => {
+  const entry = buildFundingOpportunities([
+    fundingQuote('Robinhood Lighter', 'BTC', 0.0001),
+    fundingQuote('Variational', 'BTC', 0.001),
+  ])[0];
+  const position = openSimulatedArbPosition({
+    id: 'paper-1',
+    opportunity: entry,
+    notionalPerLeg: 10_000,
+    executionCostBpsPerFill: 2,
+    expectedHoldHours: 24,
+    alertSpread8h: 0.0002,
+    now: 1_000,
+  });
+  const reversed = buildFundingOpportunities([
+    fundingQuote('Robinhood Lighter', 'BTC', 0.001),
+    fundingQuote('Variational', 'BTC', 0.0001),
+  ])[0];
+  const afterEightHours = markSimulatedArbPosition(
+    position,
+    reversed,
+    1_000 + 8 * 3_600_000,
+  );
+
+  assert.equal(afterEightHours.accruedGrossCarry, 9);
+  assert.equal(afterEightHours.currentSpread8h, -0.0009);
+  assert.equal(afterEightHours.alertTriggeredAt, 1_000 + 8 * 3_600_000);
+  assert.equal(simulatedArbRoundTripCost(afterEightHours), 8);
+});
+
+function fundingQuote(
+  venue: 'Robinhood Lighter' | 'Variational',
+  symbol: string,
+  fundingRate8h: number,
+) {
+  return {
+    venue,
+    symbol,
+    marketId: venue === 'Robinhood Lighter' ? 1 : null,
+    fundingRate8h,
+    nativeRate: fundingRate8h,
+    intervalSeconds: 28_800,
+    markPrice: 100,
+    openInterest: null,
+    volume24h: null,
+    updatedAt: 1,
+  };
+}

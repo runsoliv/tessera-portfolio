@@ -27,6 +27,30 @@ export type FundingOpportunity = {
   markDispersionBps: number | null;
 };
 
+export type SimulatedArbPosition = {
+  id: string;
+  symbol: string;
+  status: 'open' | 'closed';
+  longVenue: FundingVenue;
+  shortVenue: FundingVenue;
+  notionalPerLeg: number;
+  openedAt: number;
+  closedAt: number | null;
+  lastMarkedAt: number;
+  entryLongRate8h: number;
+  entryShortRate8h: number;
+  entrySpread8h: number;
+  currentLongRate8h: number;
+  currentShortRate8h: number;
+  currentSpread8h: number;
+  accruedGrossCarry: number;
+  executionCostBpsPerFill: number;
+  expectedHoldHours: number;
+  alertSpread8h: number;
+  alertTriggeredAt: number | null;
+  notifiedAt: number | null;
+};
+
 export type LighterFundingRate = {
   market_id?: unknown;
   exchange?: unknown;
@@ -275,6 +299,90 @@ export function estimateFundingCarry({
         ? (executionCost / (notional * opportunity.spread8h)) * 8
         : null,
   };
+}
+
+export function openSimulatedArbPosition({
+  id,
+  opportunity,
+  notionalPerLeg,
+  executionCostBpsPerFill,
+  expectedHoldHours,
+  alertSpread8h,
+  now = Date.now(),
+}: {
+  id: string;
+  opportunity: FundingOpportunity;
+  notionalPerLeg: number;
+  executionCostBpsPerFill: number;
+  expectedHoldHours: number;
+  alertSpread8h: number;
+  now?: number;
+}): SimulatedArbPosition {
+  return {
+    id,
+    symbol: opportunity.symbol,
+    status: 'open',
+    longVenue: opportunity.longVenue,
+    shortVenue: opportunity.shortVenue,
+    notionalPerLeg: Math.max(0, notionalPerLeg),
+    openedAt: now,
+    closedAt: null,
+    lastMarkedAt: now,
+    entryLongRate8h: opportunity.longRate8h,
+    entryShortRate8h: opportunity.shortRate8h,
+    entrySpread8h: opportunity.spread8h,
+    currentLongRate8h: opportunity.longRate8h,
+    currentShortRate8h: opportunity.shortRate8h,
+    currentSpread8h: opportunity.spread8h,
+    accruedGrossCarry: 0,
+    executionCostBpsPerFill: Math.max(0, executionCostBpsPerFill),
+    expectedHoldHours: Math.max(0, expectedHoldHours),
+    alertSpread8h,
+    alertTriggeredAt: null,
+    notifiedAt: null,
+  };
+}
+
+export function markSimulatedArbPosition(
+  position: SimulatedArbPosition,
+  opportunity: FundingOpportunity | undefined,
+  now = Date.now(),
+): SimulatedArbPosition {
+  if (position.status === 'closed' || !opportunity) return position;
+
+  const longQuote = opportunity.quotes.find(
+    (quote) => quote.venue === position.longVenue,
+  );
+  const shortQuote = opportunity.quotes.find(
+    (quote) => quote.venue === position.shortVenue,
+  );
+  if (!longQuote || !shortQuote) return position;
+
+  const elapsedHours = Math.max(0, now - position.lastMarkedAt) / 3_600_000;
+  const currentSpread8h = shortQuote.fundingRate8h - longQuote.fundingRate8h;
+  const accruedGrossCarry =
+    position.accruedGrossCarry +
+    position.notionalPerLeg * position.currentSpread8h * (elapsedHours / 8);
+  const alertTriggered = currentSpread8h <= position.alertSpread8h;
+
+  return {
+    ...position,
+    lastMarkedAt: Math.max(position.lastMarkedAt, now),
+    currentLongRate8h: longQuote.fundingRate8h,
+    currentShortRate8h: shortQuote.fundingRate8h,
+    currentSpread8h,
+    accruedGrossCarry,
+    alertTriggeredAt:
+      alertTriggered && position.alertTriggeredAt === null
+        ? now
+        : position.alertTriggeredAt,
+  };
+}
+
+export function simulatedArbRoundTripCost(position: SimulatedArbPosition) {
+  return (
+    position.notionalPerLeg * (position.executionCostBpsPerFill / 10_000) * 4
+  );
 }
 
 function cleanSymbol(value: string) {

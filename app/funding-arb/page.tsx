@@ -5,16 +5,20 @@ import {
   ArrowDownLeft,
   ArrowLeftRight,
   ArrowUpRight,
+  BellRing,
   Calculator,
   CheckCircle2,
   Clock3,
   ExternalLink,
+  FlaskConical,
   Gauge,
+  Plus,
   RefreshCw,
   Search,
   ShieldAlert,
   Sparkles,
   TimerReset,
+  Trash2,
   TrendingUp,
   Wifi,
 } from 'lucide-react';
@@ -40,11 +44,15 @@ import {
 import {
   estimateFundingCarry,
   FUNDING_VENUES,
+  markSimulatedArbPosition,
   nextFundingBoundary,
+  openSimulatedArbPosition,
+  simulatedArbRoundTripCost,
   type FundingHistoryPoint,
   type FundingOpportunity,
   type FundingQuote,
   type FundingVenue,
+  type SimulatedArbPosition,
 } from '@/lib/funding-arb';
 
 type FundingResponse = {
@@ -56,6 +64,8 @@ type FundingResponse = {
 
 type TrackedSpread = { timestamp: number; spread8h: number };
 type TrackedSpreads = Record<string, TrackedSpread[]>;
+
+const SIMULATED_POSITIONS_KEY = 'tessera-simulated-arbs-v1';
 
 export default function FundingArbPage() {
   const [data, setData] = useState<FundingResponse | null>(null);
@@ -86,6 +96,17 @@ export default function FundingArbPage() {
     bothLegsFilled: false,
     holdThroughSettlement: false,
   });
+  const [simulatedPositions, setSimulatedPositions] = useState<
+    SimulatedArbPosition[]
+  >([]);
+  const [simulationsReady, setSimulationsReady] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() =>
+    typeof Notification === 'undefined'
+      ? 'unsupported'
+      : Notification.permission,
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -125,6 +146,34 @@ export default function FundingArbPage() {
         }
         return next;
       });
+      setSimulatedPositions((current) =>
+        current.map((position) => {
+          const marked = markSimulatedArbPosition(
+            position,
+            nextData.opportunities.find(
+              (opportunity) => opportunity.symbol === position.symbol,
+            ),
+            nextData.fetchedAt,
+          );
+          if (
+            position.alertTriggeredAt === null &&
+            marked.alertTriggeredAt !== null &&
+            marked.notifiedAt === null &&
+            typeof Notification !== 'undefined' &&
+            Notification.permission === 'granted'
+          ) {
+            window.setTimeout(
+              () =>
+                new Notification(`${marked.symbol} funding alert`, {
+                  body: `The simulated spread fell to ${formatRate(marked.currentSpread8h)}. Review both legs before closing.`,
+                }),
+              0,
+            );
+            return { ...marked, notifiedAt: nextData.fetchedAt };
+          }
+          return marked;
+        }),
+      );
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -149,6 +198,26 @@ export default function FundingArbPage() {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSimulatedPositions(loadSimulatedPositions());
+      setSimulationsReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!simulationsReady) return;
+    try {
+      window.localStorage.setItem(
+        SIMULATED_POSITIONS_KEY,
+        JSON.stringify(simulatedPositions),
+      );
+    } catch {
+      // Keep the active page usable when browser storage is unavailable.
+    }
+  }, [simulatedPositions, simulationsReady]);
 
   const filtered = useMemo(() => {
     const search = query.trim().toUpperCase();
@@ -197,6 +266,12 @@ export default function FundingArbPage() {
         executionCostBpsPerFill: costBpsPerFill,
       }).netCarry > 0,
   ).length;
+  const openSimulations = simulatedPositions.filter(
+    (position) => position.status === 'open',
+  );
+  const triggeredSimulations = openSimulations.filter(
+    (position) => position.alertTriggeredAt !== null,
+  );
 
   useEffect(() => {
     if (lighterMarketId === null || historyByMarket[lighterMarketId]) return;
@@ -223,6 +298,63 @@ export default function FundingArbPage() {
       controller.abort();
     };
   }, [historyByMarket, lighterMarketId]);
+
+  const openSimulation = () => {
+    if (!selected) return;
+    const id =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${selected.symbol}-${Date.now()}`;
+    const position = openSimulatedArbPosition({
+      id,
+      opportunity: selected,
+      notionalPerLeg,
+      executionCostBpsPerFill: costBpsPerFill,
+      expectedHoldHours: holdHours,
+      alertSpread8h: Math.max(0, selected.spread8h * 0.25),
+      now: data?.fetchedAt ?? Date.now(),
+    });
+    setSimulatedPositions((current) => [position, ...current]);
+  };
+
+  const closeSimulation = (id: string) => {
+    setSimulatedPositions((current) =>
+      current.map((position) => {
+        if (position.id !== id || position.status === 'closed') return position;
+        const marked = markSimulatedArbPosition(
+          position,
+          data?.opportunities.find(
+            (opportunity) => opportunity.symbol === position.symbol,
+          ),
+          Date.now(),
+        );
+        return { ...marked, status: 'closed', closedAt: Date.now() };
+      }),
+    );
+  };
+
+  const updateSimulationAlert = (id: string, percentage: number) => {
+    const alertSpread8h = percentage / 100;
+    setSimulatedPositions((current) =>
+      current.map((position) =>
+        position.id === id
+          ? {
+              ...position,
+              alertSpread8h,
+              alertTriggeredAt:
+                position.currentSpread8h <= alertSpread8h ? Date.now() : null,
+              notifiedAt: null,
+            }
+          : position,
+      ),
+    );
+  };
+
+  const enableNotifications = async () => {
+    if (typeof Notification === 'undefined') return;
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+  };
 
   return (
     <>
@@ -366,6 +498,15 @@ export default function FundingArbPage() {
                     {formatDuration(holdHours)} · after{' '}
                     {formatMoney(selectedEstimate.executionCost)} costs
                   </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={openSimulation}
+                    className="mt-3 h-8"
+                  >
+                    <Plus className="size-3.5" />
+                    Track simulated arb
+                  </Button>
                 </div>
               </div>
 
@@ -565,6 +706,78 @@ export default function FundingArbPage() {
             </div>
           </div>
         ) : null}
+      </Panel>
+
+      <Panel className="mt-4 overflow-hidden">
+        <PanelHeader
+          title="Simulated arb positions"
+          description="Paper-track the exact long and short venues you selected. Estimated carry updates from the live funding spread and is stored on this device."
+          aside={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {triggeredSimulations.length > 0 ? (
+                <Badge className="border-[var(--negative)]/30 bg-[var(--negative)]/10 text-[var(--negative)]">
+                  <BellRing /> {triggeredSimulations.length} exit alert
+                  {triggeredSimulations.length === 1 ? '' : 's'}
+                </Badge>
+              ) : (
+                <Badge variant="outline">
+                  <FlaskConical /> {openSimulations.length} open
+                </Badge>
+              )}
+              {notificationPermission === 'default' ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => void enableNotifications()}
+                >
+                  <BellRing className="size-3.5" /> Enable browser alerts
+                </Button>
+              ) : null}
+            </div>
+          }
+        />
+
+        {simulatedPositions.length ? (
+          <div className="grid gap-3 p-5 xl:grid-cols-2">
+            {simulatedPositions.map((position) => (
+              <SimulatedPositionCard
+                key={position.id}
+                position={position}
+                now={clock}
+                onClose={() => closeSimulation(position.id)}
+                onAlertChange={(percentage) =>
+                  updateSimulationAlert(position.id, percentage)
+                }
+                onRemove={() =>
+                  setSimulatedPositions((current) =>
+                    current.filter((item) => item.id !== position.id),
+                  )
+                }
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="grid min-h-40 place-items-center px-5 py-10 text-center">
+            <div>
+              <FlaskConical className="mx-auto size-6 text-muted-foreground" />
+              <p className="mt-3 text-[12px] font-semibold">
+                No simulated positions yet
+              </p>
+              <p className="mt-1 max-w-sm text-[10px] leading-4 text-muted-foreground">
+                Select a ranked pair, review the settlement checks, then choose
+                “Track simulated arb.” No real orders are sent.
+              </p>
+            </div>
+          </div>
+        )}
+        <p className="border-t border-border px-5 py-3 text-[9px] leading-4 text-muted-foreground">
+          Funding is estimated between 60-second observations; actual venue
+          settlement, fills, slippage, basis movement and liquidation are not
+          simulated. Browser alerts work only while this site can refresh in the
+          background.
+        </p>
       </Panel>
 
       <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -922,6 +1135,172 @@ function SettlementCard({
   );
 }
 
+function SimulatedPositionCard({
+  position,
+  now,
+  onClose,
+  onAlertChange,
+  onRemove,
+}: {
+  position: SimulatedArbPosition;
+  now: number;
+  onClose: () => void;
+  onAlertChange: (percentage: number) => void;
+  onRemove: () => void;
+}) {
+  const roundTripCost = simulatedArbRoundTripCost(position);
+  const netIfClosed = position.accruedGrossCarry - roundTripCost;
+  const endTime = position.openedAt + position.expectedHoldHours * 3_600_000;
+  const remainingHours = Math.max(0, endTime - now) / 3_600_000;
+  const projectedNet =
+    position.accruedGrossCarry +
+    position.notionalPerLeg * position.currentSpread8h * (remainingHours / 8) -
+    roundTripCost;
+  const elapsedUntil = position.closedAt ?? now;
+  const isAlert =
+    position.status === 'open' && position.alertTriggeredAt !== null;
+
+  return (
+    <article
+      className={`rounded-xl border p-4 ${isAlert ? 'border-[var(--negative)]/50 bg-[var(--negative)]/[0.055]' : 'border-border bg-muted/25'}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary font-mono text-[11px] font-bold text-primary-foreground">
+            {position.symbol.slice(0, 2)}
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-mono text-[14px] font-semibold">
+                {position.symbol}
+              </h3>
+              <Badge
+                variant="outline"
+                className={
+                  position.status === 'open'
+                    ? 'text-[var(--positive)]'
+                    : 'text-muted-foreground'
+                }
+              >
+                {position.status === 'open' ? 'Paper open' : 'Closed'}
+              </Badge>
+              {isAlert ? (
+                <Badge className="border-[var(--negative)]/30 bg-[var(--negative)]/10 text-[var(--negative)]">
+                  <BellRing /> Review to close
+                </Badge>
+              ) : null}
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {formatMoney(position.notionalPerLeg)} per leg · open{' '}
+              {formatDuration(
+                Math.max(0, elapsedUntil - position.openedAt) / 3_600_000,
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+            Est. net if closed
+          </p>
+          <p
+            className={`mt-1 font-mono text-[18px] font-semibold ${netIfClosed >= 0 ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}
+          >
+            {signedMoneyPrecise(netIfClosed)}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+        <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+          <p className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+            Long
+          </p>
+          <p className="mt-1 text-[11px] font-semibold">{position.longVenue}</p>
+          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+            {formatRate(position.currentLongRate8h)} / 8h
+          </p>
+        </div>
+        <ArrowLeftRight className="mx-auto hidden size-3.5 text-muted-foreground sm:block" />
+        <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+          <p className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+            Short
+          </p>
+          <p className="mt-1 text-[11px] font-semibold">
+            {position.shortVenue}
+          </p>
+          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+            {formatRate(position.currentShortRate8h)} / 8h
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border/70 pt-3 sm:grid-cols-4">
+        <CompactStat
+          label="Entry spread"
+          value={formatRate(position.entrySpread8h)}
+        />
+        <CompactStat
+          label="Current spread"
+          value={formatRate(position.currentSpread8h)}
+        />
+        <CompactStat
+          label="Est. gross earned"
+          value={signedMoneyPrecise(position.accruedGrossCarry)}
+        />
+        <CompactStat
+          label="Projected horizon net"
+          value={signedMoneyPrecise(projectedNet)}
+        />
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-end sm:justify-between">
+        <label className="block min-w-0 flex-1">
+          <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            Alert when 8h spread is at or below
+          </span>
+          <div className="mt-1.5 flex h-9 max-w-48 items-center rounded-lg border border-border bg-background px-3 focus-within:border-ring">
+            <input
+              type="number"
+              value={(position.alertSpread8h * 100).toFixed(4)}
+              step={0.0001}
+              disabled={position.status === 'closed'}
+              onChange={(event) =>
+                onAlertChange(Number(event.target.value) || 0)
+              }
+              className="min-w-0 flex-1 bg-transparent font-mono text-[11px] font-semibold outline-none disabled:opacity-60"
+              aria-label={`${position.symbol} exit alert spread`}
+            />
+            <span className="text-[10px] text-muted-foreground">%</span>
+          </div>
+        </label>
+        <div className="flex gap-2">
+          {position.status === 'open' ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
+              onClick={onClose}
+            >
+              Close simulation
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9 text-muted-foreground"
+              onClick={onRemove}
+            >
+              <Trash2 className="size-3.5" /> Remove
+            </Button>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function ReadinessRow({
   ready,
   label,
@@ -1028,6 +1407,15 @@ function signedMoney(value: number) {
   return `${value >= 0 ? '+' : '-'}${formatMoney(Math.abs(value))}`;
 }
 
+function signedMoneyPrecise(value: number) {
+  return `${value >= 0 ? '+' : '-'}${new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Math.abs(value))}`;
+}
+
 function formatDuration(hours: number) {
   if (!Number.isFinite(hours)) return '—';
   if (hours < 1) return `${Math.max(0, hours * 60).toFixed(0)}m`;
@@ -1058,4 +1446,27 @@ function formatClock(timestamp: number) {
     minute: '2-digit',
     second: '2-digit',
   }).format(timestamp);
+}
+
+function loadSimulatedPositions(): SimulatedArbPosition[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(SIMULATED_POSITIONS_KEY) ?? '[]',
+    ) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (position): position is SimulatedArbPosition =>
+        typeof position === 'object' &&
+        position !== null &&
+        typeof (position as SimulatedArbPosition).id === 'string' &&
+        typeof (position as SimulatedArbPosition).symbol === 'string' &&
+        ((position as SimulatedArbPosition).status === 'open' ||
+          (position as SimulatedArbPosition).status === 'closed') &&
+        Number.isFinite((position as SimulatedArbPosition).currentSpread8h) &&
+        Number.isFinite((position as SimulatedArbPosition).lastMarkedAt),
+    );
+  } catch {
+    return [];
+  }
 }
