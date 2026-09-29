@@ -13,6 +13,7 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  Gift,
   ImageUp,
   LayoutDashboard,
   Moon,
@@ -44,6 +45,7 @@ const navItems = [
   { href: '/analytics', label: 'Analytics', icon: CircleGauge },
   { href: '/calendar', label: 'P&L Calendar', icon: CalendarDays },
   { href: '/funding-arb', label: 'Funding Arb', icon: ArrowLeftRight },
+  { href: '/airdrop', label: 'LIT Airdrop', icon: Gift },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -84,6 +86,7 @@ const pageMeta: Record<string, { title: string; eyebrow: string }> = {
     eyebrow: 'Live cross-venue scanner',
   },
   '/settings': { title: 'Local preferences', eyebrow: 'Privacy & data' },
+  '/airdrop': { title: 'LIT airdrop calculator', eyebrow: 'Robinhood Chain' },
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -279,7 +282,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <nav
         aria-label="Mobile navigation"
-        className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-10 rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
+        className="fixed inset-x-3 bottom-3 z-40 flex overflow-x-auto rounded-xl border border-border bg-card/95 p-1.5 shadow-lg backdrop-blur-xl lg:hidden"
       >
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -289,7 +292,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               key={item.href}
               href={item.href}
               aria-label={item.label}
-              className={`grid h-11 place-items-center rounded-lg transition ${active ? 'bg-muted font-semibold text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              className={`grid h-11 min-w-11 flex-1 shrink-0 place-items-center rounded-lg transition ${active ? 'bg-muted font-semibold text-primary' : 'text-muted-foreground hover:text-foreground'}`}
             >
               <Icon className="size-4" />
               <span className="sr-only">{item.label}</span>
